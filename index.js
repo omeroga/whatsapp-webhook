@@ -1,91 +1,71 @@
 // index.js
 const express = require("express");
-const app = express();
+const axios = require("axios");
 
+const app = express();
 app.use(express.json());
 
-// ====== CONFIG ======
-const VERIFY_TOKEN = "subitetest";                          // חייב להתאים למה שהגדרת במטא
-const WABA_TOKEN    = process.env.WHATSAPP_TOKEN;           // להגדיר ב-Render
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;        // להגדיר ב-Render
-
-// ====== HELPERS ======
-async function sendText(to, body) {
-  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
-
-  const payload = {
-    messaging_product: "whatsapp",
-    recipient_type: "individual",
-    to,
-    type: "text",
-    text: { preview_url: false, body }
-  };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${WABA_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.error("Send message error:", res.status, err);
-  }
-}
-
-// ====== WEBHOOK VERIFY (GET) ======
+// --- GET /webhook - verification (Meta console) ---
 app.get("/webhook", (req, res) => {
+  const VERIFY_TOKEN = "subitetest"; // אותו טוקן שהגדרת ב-Meta
+
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
   if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("WEBHOOK_VERIFIED");
     return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
 });
 
-// ====== WEBHOOK RECEIVE (POST) ======
+// --- POST /webhook - receive messages & auto-reply ---
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body?.entry?.[0];
+    const entry = req.body.entry?.[0];
     const change = entry?.changes?.[0];
-    const messages = change?.value?.messages;
+    const value = change?.value;
+    const messages = value?.messages;
 
     if (messages && messages.length) {
       for (const msg of messages) {
-        const from = msg.from;                 // מספר הוואטסאפ של הלקוח (בפורמט בינ"ל ללא +)
-        const type = msg.type;
+        const from = msg.from; // מספר הווטסאפ של הלקוח
+        const type = msg.type; // סוג ההודעה
 
-        // שולחים תפריט פתיחה על כל הודעת טקסט שנכנסת
-        if (type === "text" || type === "button" || type === "interactive") {
+        // עונים רק כשזו הודעת טקסט נכנסת
+        if (type === "text") {
           const menu =
-`שלום! הגעתם ל-Subite 🚖
-בחרו אפשרות:
-1) להזמין מונית
-2) לבדוק מחיר נסיעה
-3) עזרה/נציג
+            "שלום, הגעתם לשירות מוניות עומר 🚖\n" +
+            "בחרו אחת מהאפשרויות:\n" +
+            "1. להזמין מונית\n" +
+            "2. לדבר עם נציג";
 
-כתבו מספר (1-3) כדי להמשיך.`;
-          await sendText(from, menu);
+          await axios.post(
+            `https://graph.facebook.com/v23.0/${process.env.PHONE_NUMBER_ID}/messages`,
+            {
+              messaging_product: "whatsapp",
+              to: from,
+              text: { body: menu },
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+                "Content-Type": "application/json",
+              },
+            }
+          );
         }
       }
     }
-    res.sendStatus(200);
-  } catch (e) {
-    console.error("Webhook handler error:", e);
-    res.sendStatus(200); // תמיד 200 למטא
+
+    // חייבים להחזיר 200 כדי שמטה לא תנסה שוב
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error("Webhook POST error:", err?.response?.data || err.message);
+    return res.sendStatus(500);
   }
 });
 
-// ====== HEALTH ======
-app.get("/", (_, res) => res.status(200).send("OK"));
-
-// ====== START ======
+// --- server ---
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
-
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
