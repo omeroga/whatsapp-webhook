@@ -45,7 +45,7 @@ app.post("/webhook", async (req, res) => {
             {
               messaging_product: "whatsapp",
               to: "50231390807",
-              text: { body:"leads"},
+              text: {body:"AUTO-REPLY v1 (from Render)"},
             },
             {
               headers: {
