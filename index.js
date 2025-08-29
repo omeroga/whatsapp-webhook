@@ -7,7 +7,7 @@ app.use(express.json());
 
 // --- GET /webhook - verification (Meta console) ---
 app.get("/webhook", (req, res) => {
-  const VERIFY_TOKEN = "subitetest"; // אותו טוקן שהגדרת ב-Meta
+  const VERIFY_TOKEN = process.env.VERIFY.TOKEN; // אותו טוקן שהגדרת ב-Meta
 
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
