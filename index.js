@@ -44,8 +44,8 @@ app.post("/webhook", async (req, res) => {
             `https://graph.facebook.com/v23.0/${process.env.PHONE_NUMBER_ID}/messages`,
             {
               messaging_product: "whatsapp",
-              to: from,
-              text: { body: menu },
+              to: "50231390807",
+              text: { body: leads },
             },
             {
               headers: {
