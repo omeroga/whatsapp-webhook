@@ -15,7 +15,7 @@ const AUTH = {
   },
 };
 
-// פונקציות עזר
+// פונקציית עזר לשליחת כפתורים
 async function sendButtons(to, bodyText, buttons) {
   return axios.post(
     GRAPH_URL,
@@ -33,7 +33,8 @@ async function sendButtons(to, bodyText, buttons) {
   );
 }
 
-async function sendList(to) {
+// פונקציית עזר לשליחת ליסט של בעלי מקצוע
+async function sendClientList(to) {
   return axios.post(
     GRAPH_URL,
     {
@@ -51,16 +52,11 @@ async function sendList(to) {
             {
               title: "Profesionales",
               rows: [
-                { id: "srv_fontanero", title: "🚰 Plomero" },
+                { id: "srv_plomero", title: "🚰 Plomero" },
                 { id: "srv_electricista", title: "💡 Electricista" },
                 { id: "srv_cerrajero", title: "🔑 Cerrajero" },
-                { id: "srv_gasista", title: "🔥 Gasista" },
-                { id: "srv_vidriero", title: "🪟 Vidriero" },
-                { id: "srv_refrigeracion", title: "❄️ Aire Acond" },
-                { id: "srv_carpintero", title: "🪚 Carpintero" },
-                { id: "srv_albanil", title: "🧱 Albañil" },
-                { id: "srv_plaguicida", title: "🐜 Plaguicida" },
-                { id: "srv_pintor", title: "🎨 Pintor" }
+                { id: "srv_mecanico", title: "🛠️ Mecánico" },
+                { id: "srv_grua", title: "🚗 Grúa" }
               ]
             }
           ]
@@ -71,6 +67,7 @@ async function sendList(to) {
   );
 }
 
+// פונקציית עזר לשליחת טקסט
 async function sendText(to, body) {
   return axios.post(
     GRAPH_URL,
@@ -102,8 +99,7 @@ app.post("/webhook", async (req, res) => {
         if (msg.type === "interactive" && msg.interactive?.type === "button_reply") {
           const id = msg.interactive.button_reply.id;
           if (id === "role_cliente") {
-            // שולחים ליסט של בעלי מקצוע
-            await sendList(from);
+            await sendClientList(from);
             continue;
           }
           if (id === "role_tecnico") {
