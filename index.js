@@ -45,7 +45,7 @@ app.post("/webhook", async (req, res) => {
             messaging_product: "whatsapp",
             to: from,
             type: "text",
-            text: { body: "AUTO-REPLY v1 (from Render)" },
+            text: { body: "Bienvenido, has llegado a *Servicio24*\nElige tu rol para continuar:\n1. Cliente\n2. Técnico" },
           },
           AUTH
         );
