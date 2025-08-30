@@ -50,7 +50,7 @@ app.post("/webhook", async (req, res) => {
             interactive: {
               type: "button",
               body: {
-                text: "*Bienvenido a Servicio24*\n\nSelecciona tu rol:",
+                text: "*Bienvenido a Servicio24*\n\n*Selecciona tu rol:*",
               },
               action: {
                 buttons: [
