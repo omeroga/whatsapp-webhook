@@ -1,14 +1,22 @@
-// index.js
+ //index.js
 const express = require("express");
 const axios = require("axios");
 
 const app = express();
 app.use(express.json());
 
+// --- helpers / consts ---
+const GRAPH_URL = `https://graph.facebook.com/v${process.env.GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
+const AUTH = {
+  headers: {
+    Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+    "Content-Type": "application/json",
+  },
+};
+
 // --- GET /webhook - verification (Meta console) ---
 app.get("/webhook", (req, res) => {
-  const VERIFY_TOKEN = process.env.VERIFY_TOKEN; // אותו טוקן שהגדרת ב-Meta
-
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
@@ -27,42 +35,29 @@ app.post("/webhook", async (req, res) => {
     const value = change?.value;
     const messages = value?.messages;
 
-    if (messages && messages.length) {
+    if (Array.isArray(messages) && messages.length) {
       for (const msg of messages) {
-        const from = msg.from; // מספר הווטסאפ של הלקוח
-        const type = msg.type; // סוג ההודעה
-
-        // עונים רק כשזו הודעת טקסט נכנסת
-        if (type === "text") {
-          const menu =
-            "שלום, הגעתם לשירות מוניות עומר 🚖\n" +
-            "בחרו אחת מהאפשרויות:\n" +
-            "1. להזמין מונית\n" +
-            "2. לדבר עם נציג";
-
-          await axios.post(
-            `https://graph.facebook.com/v23.0/${process.env.PHONE_NUMBER_ID}/messages`,
-            {
-              messaging_product: "whatsapp",
-              to: "50231390807",
-              text: {body:"AUTO-REPLY v1 (from Render)"},
-            },
-            {
-              headers: {
-                Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                "Content-Type": "application/json",
-              },
-            }
-          );
-        }
+        const from = msg.from; // מספר הוואטסאפ של הלקוח (יעד המענה)
+        // בשלב זה: מענה טקסט פשוט – נשדרג בהמשך לתפריטים
+        await axios.post(
+          GRAPH_URL,
+          {
+            messaging_product: "whatsapp",
+            to: from,
+            type: "text",
+            text: { body: "AUTO-REPLY v1 (from Render)" },
+          },
+          AUTH
+        );
       }
     }
 
-    // חייבים להחזיר 200 כדי שמטה לא תנסה שוב
+    // צריך להחזיר 200 כדי שמטה לא תנסה שוב
     return res.sendStatus(200);
   } catch (err) {
     console.error("Webhook POST error:", err?.response?.data || err.message);
-    return res.sendStatus(500);
+    // תמיד 200 כדי לא לגרום לריטריים אינסופיים; לוגים מספיקים לנו לדיבאג
+    return res.sendStatus(200);
   }
 });
 
