@@ -56,7 +56,7 @@ async function sendList(to) {
                 { id: "srv_cerrajero", title: "🔑 Cerrajero" },
                 { id: "srv_gasista", title: "🔥 Gasista" },
                 { id: "srv_vidriero", title: "🪟 Vidriero" },
-                { id: "srv_refrigeracion", title: "❄️ Refrigeración / Aire acondicionado" },
+                { id: "srv_refrigeracion", title: "❄️ Aire Acond" },
                 { id: "srv_carpintero", title: "🪚 Carpintero" },
                 { id: "srv_albanil", title: "🧱 Albañil" },
                 { id: "srv_plaguicida", title: "🐜 Plaguicida" },
