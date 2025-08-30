@@ -5,7 +5,7 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// ===== Helpers / Consts =====
+// --- helpers / consts ---
 const GRAPH_URL = `https://graph.facebook.com/v${process.env.GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
 const AUTH = {
   headers: {
@@ -14,9 +14,9 @@ const AUTH = {
   },
 };
 
-// Send plain text
+// --- פונקציה לשליחת טקסט פשוט ---
 async function sendText(to, text) {
-  return axios.post(
+  await axios.post(
     GRAPH_URL,
     {
       messaging_product: "whatsapp",
@@ -28,33 +28,9 @@ async function sendText(to, text) {
   );
 }
 
-// Send 2-button message (role selection)
-async function sendButtons(to, { header, body, buttons }) {
-  return axios.post(
-    GRAPH_URL,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "button",
-        header, // { type: "text", text: "..." }
-        body,   // { text: "..." }
-        action: {
-          buttons: buttons.map((b) => ({
-            type: "reply",
-            reply: { id: b.id, title: b.title }, // אין עיצוב בטייטל
-          })),
-        },
-      },
-    },
-    AUTH
-  );
-}
-
-// Send client services list (up to 10 rows, each title ≤ 24 chars)
+// --- פונקציה לשליחת תפריט ללקוח ---
 async function sendClientList(to) {
-  return axios.post(
+  await axios.post(
     GRAPH_URL,
     {
       messaging_product: "whatsapp",
@@ -62,25 +38,30 @@ async function sendClientList(to) {
       type: "interactive",
       interactive: {
         type: "list",
-        header: { type: "text", text: "Servicios disponibles" }, // Header מודגש אוטומטית
-        body: { text: "**Selecciona el profesional que necesitas:**" },
-        footer: { text: "Servicio24" },
+        header: {
+          type: "text",
+          text: "Servicios disponibles", // בלי Markdown
+        },
+        body: {
+          text: "*Selecciona el profesional que necesitas:*", // כאן מותר Bold
+        },
+        footer: {
+          text: "Servicio24",
+        },
         action: {
           button: "Elegir",
           sections: [
             {
               title: "Profesionales",
               rows: [
-                { id: "pro_electricista",      title: "⚡ Electricista" },
-                { id: "pro_plomero",           title: "🚰 Plomero" },
-                { id: "pro_cerrajero",         title: "🔑 Cerrajero" },
-                { id: "pro_vidriero",          title: "🪟 Vidriero" },
-                { id: "pro_electrodomesticos", title: "🔧 Electrodomésticos" },
-                { id: "pro_tapicero",          title: "🪑 Tapicero" },
-                { id: "pro_carpintero",        title: "🪚 Carpintero" },
-                { id: "pro_mecanico",          title: "🛠️ Mecánico" },
-                { id: "pro_grua",              title: "🚛 Grúa" },
-                { id: "pro_tecnologia",        title: "💻 Tecnología" },
+                { id: "role_electricista", title: "⚡ Electricista" },
+                { id: "role_fontanero", title: "🚰 Fontanero" },
+                { id: "role_cerrajero", title: "🔑 Cerrajero" },
+                { id: "role_vidriero", title: "🪟 Vidriero" },
+                { id: "role_albanil", title: "🧱 Albañil" },
+                { id: "role_carpintero", title: "🪚 Carpintero" },
+                { id: "role_mecanico", title: "🔧 Mecánico" },
+                { id: "role_grua", title: "🚚 Grúa" },
               ],
             },
           ],
@@ -91,10 +72,9 @@ async function sendClientList(to) {
   );
 }
 
-// ===== GET /webhook (verification from Meta console) =====
+// --- GET /webhook - verification (Meta console) ---
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
@@ -105,55 +85,58 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// ===== POST /webhook (receive & respond) =====
+// --- POST /webhook - receive messages & auto-reply ---
 app.post("/webhook", async (req, res) => {
   try {
-    const entries = req.body.entry || [];
-    for (const entry of entries) {
-      const changes = entry.changes || [];
-      for (const change of changes) {
-        const value = change.value || {};
-        const messages = value.messages || [];
-        for (const msg of messages) {
-          const from = msg.from;
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const messages = value?.messages;
 
-          // Handle interactive replies
-          if (msg.type === "interactive") {
-            const interactive = msg.interactive || {};
-            // Button reply (role selection)
-            if (interactive.type === "button_reply") {
-              const { id } = interactive.button_reply || {};
-              if (id === "role_cliente") {
-                await sendClientList(from);
-                continue;
-              }
-              if (id === "role_tecnico") {
-                await sendText(from, "Función de **Técnico** en construcción…");
-                continue;
-              }
-            }
-            // List reply (service chosen) – placeholder
-            if (interactive.type === "list_reply") {
-              const { id } = interactive.list_reply || {};
-              await sendText(from, `Recibido: ${id}. Próximo paso en construcción…`);
-              continue;
-            }
-          }
+    if (Array.isArray(messages) && messages.length) {
+      for (const msg of messages) {
+        const from = msg.from;
+        const id = msg.interactive?.list_reply?.id;
 
-          // Any other incoming message -> show welcome + role buttons
-          await sendButtons(from, {
-            header: { type: "text", text: "Bienvenido a **Servicio24**" },
-            body: { text: "**Selecciona tu rol:**" },
-            buttons: [
-              { id: "role_cliente", title: "Cliente" },
-              { id: "role_tecnico", title: "Técnico" },
-            ],
-          });
+        // אם המשתמש בחר "Cliente"
+        if (id === "role_cliente") {
+          await sendClientList(from);
+          continue;
+        }
+
+        // אם המשתמש בחר "Técnico"
+        if (id === "role_tecnico") {
+          await sendText(from, "Función de *Técnico* en construcción...");
+          continue;
+        }
+
+        // ברירת מחדל – הודעת פתיחה
+        if (msg.type === "text") {
+          await axios.post(
+            GRAPH_URL,
+            {
+              messaging_product: "whatsapp",
+              to: from,
+              type: "interactive",
+              interactive: {
+                type: "button",
+                body: {
+                  text: "Bienvenido a *Servicio24*\n\n*Selecciona tu rol:*",
+                },
+                action: {
+                  buttons: [
+                    { type: "reply", reply: { id: "role_cliente", title: "Cliente" } },
+                    { type: "reply", reply: { id: "role_tecnico", title: "Técnico" } },
+                  ],
+                },
+              },
+            },
+            AUTH
+          );
         }
       }
     }
 
-    // Always 200 so Meta won't retry
     return res.sendStatus(200);
   } catch (err) {
     console.error("Webhook POST error:", err?.response?.data || err.message);
@@ -161,6 +144,6 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ===== Server =====
+// --- server ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
