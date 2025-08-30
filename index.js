@@ -5,9 +5,8 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// --- helpers / consts ---
-const API_VERSION = (process.env.GRAPH_VERSION || "23.0").replace(/^v/i, "");
-const GRAPH_URL = `https://graph.facebook.com/v${API_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
+// ===== Helpers / Consts =====
+const GRAPH_URL = `https://graph.facebook.com/v${process.env.GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
 const AUTH = {
   headers: {
     Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
@@ -15,8 +14,22 @@ const AUTH = {
   },
 };
 
-// פונקציית עזר לשליחת כפתורים
-async function sendButtons(to, bodyText, buttons) {
+// Send plain text
+async function sendText(to, text) {
+  return axios.post(
+    GRAPH_URL,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body: text },
+    },
+    AUTH
+  );
+}
+
+// Send 2-button message (role selection)
+async function sendButtons(to, { header, body, buttons }) {
   return axios.post(
     GRAPH_URL,
     {
@@ -25,15 +38,21 @@ async function sendButtons(to, bodyText, buttons) {
       type: "interactive",
       interactive: {
         type: "button",
-        body: { text: bodyText },
-        action: { buttons: buttons.map(b => ({ type: "reply", reply: b })) },
+        header, // { type: "text", text: "..." }
+        body,   // { text: "..." }
+        action: {
+          buttons: buttons.map((b) => ({
+            type: "reply",
+            reply: { id: b.id, title: b.title }, // אין עיצוב בטייטל
+          })),
+        },
       },
     },
     AUTH
   );
 }
 
-// פונקציית עזר לשליחת ליסט של בעלי מקצוע
+// Send client services list (up to 10 rows, each title ≤ 24 chars)
 async function sendClientList(to) {
   return axios.post(
     GRAPH_URL,
@@ -43,7 +62,7 @@ async function sendClientList(to) {
       type: "interactive",
       interactive: {
         type: "list",
-        header: { type: "text", text: "Servicios disponibles" },
+        header: { type: "text", text: "Servicios disponibles" }, // Header מודגש אוטומטית
         body: { text: "**Selecciona el profesional que necesitas:**" },
         footer: { text: "Servicio24" },
         action: {
@@ -52,75 +71,89 @@ async function sendClientList(to) {
             {
               title: "Profesionales",
               rows: [
-                { id: "srv_plomero", title: "🚰 Plomero" },
-                { id: "srv_electricista", title: "💡 Electricista" },
-                { id: "srv_cerrajero", title: "🔑 Cerrajero" },
-                { id: "srv_mecanico", title: "🛠️ Mecánico" },
-                { id: "srv_grua", title: "🚗 Grúa" }
-              ]
-            }
-          ]
-        }
-      }
+                { id: "pro_electricista",      title: "⚡ Electricista" },
+                { id: "pro_plomero",           title: "🚰 Plomero" },
+                { id: "pro_cerrajero",         title: "🔑 Cerrajero" },
+                { id: "pro_vidriero",          title: "🪟 Vidriero" },
+                { id: "pro_electrodomesticos", title: "🔧 Electrodomésticos" },
+                { id: "pro_tapicero",          title: "🪑 Tapicero" },
+                { id: "pro_carpintero",        title: "🪚 Carpintero" },
+                { id: "pro_mecanico",          title: "🛠️ Mecánico" },
+                { id: "pro_grua",              title: "🚛 Grúa" },
+                { id: "pro_tecnologia",        title: "💻 Tecnología" },
+              ],
+            },
+          ],
+        },
+      },
     },
     AUTH
   );
 }
 
-// פונקציית עזר לשליחת טקסט
-async function sendText(to, body) {
-  return axios.post(
-    GRAPH_URL,
-    { messaging_product: "whatsapp", to, type: "text", text: { body } },
-    AUTH
-  );
-}
-
-// --- GET /webhook - verification ---
+// ===== GET /webhook (verification from Meta console) =====
 app.get("/webhook", (req, res) => {
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
+
+  if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
 });
 
-// --- POST /webhook - handle messages ---
+// ===== POST /webhook (receive & respond) =====
 app.post("/webhook", async (req, res) => {
   try {
-    const messages = req.body?.entry?.[0]?.changes?.[0]?.value?.messages;
-    if (Array.isArray(messages)) {
-      for (const msg of messages) {
-        const from = msg.from;
+    const entries = req.body.entry || [];
+    for (const entry of entries) {
+      const changes = entry.changes || [];
+      for (const change of changes) {
+        const value = change.value || {};
+        const messages = value.messages || [];
+        for (const msg of messages) {
+          const from = msg.from;
 
-        // אם המשתמש לחץ על כפתור פתיחה
-        if (msg.type === "interactive" && msg.interactive?.type === "button_reply") {
-          const id = msg.interactive.button_reply.id;
-          if (id === "role_cliente") {
-            await sendClientList(from);
-            continue;
+          // Handle interactive replies
+          if (msg.type === "interactive") {
+            const interactive = msg.interactive || {};
+            // Button reply (role selection)
+            if (interactive.type === "button_reply") {
+              const { id } = interactive.button_reply || {};
+              if (id === "role_cliente") {
+                await sendClientList(from);
+                continue;
+              }
+              if (id === "role_tecnico") {
+                await sendText(from, "Función de **Técnico** en construcción…");
+                continue;
+              }
+            }
+            // List reply (service chosen) – placeholder
+            if (interactive.type === "list_reply") {
+              const { id } = interactive.list_reply || {};
+              await sendText(from, `Recibido: ${id}. Próximo paso en construcción…`);
+              continue;
+            }
           }
-          if (id === "role_tecnico") {
-            await sendText(from, "Función de *Técnico* en construcción...");
-            continue;
-          }
-        }
 
-        // אם זו הודעת טקסט ראשונה – שולחים תפריט פתיחה (Cliente/Técnico)
-        if (msg.type === "text") {
-          await sendButtons(
-            from,
-            "*Bienvenido a Servicio24*\n\n*Selecciona tu rol:*",
-            [
+          // Any other incoming message -> show welcome + role buttons
+          await sendButtons(from, {
+            header: { type: "text", text: "Bienvenido a **Servicio24**" },
+            body: { text: "**Selecciona tu rol:**" },
+            buttons: [
               { id: "role_cliente", title: "Cliente" },
-              { id: "role_tecnico", title: "Técnico" }
-            ]
-          );
+              { id: "role_tecnico", title: "Técnico" },
+            ],
+          });
         }
       }
     }
+
+    // Always 200 so Meta won't retry
     return res.sendStatus(200);
   } catch (err) {
     console.error("Webhook POST error:", err?.response?.data || err.message);
@@ -128,6 +161,6 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// --- server ---
+// ===== Server =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
