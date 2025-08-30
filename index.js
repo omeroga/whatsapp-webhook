@@ -44,7 +44,7 @@ async function sendClientList(to) {
       interactive: {
         type: "list",
         header: { type: "text", text: "Servicios disponibles" },
-        body: { text: "Selecciona el profesional que necesitas:" },
+        body: { text: "**Selecciona el profesional que necesitas:**" },
         footer: { text: "Servicio24" },
         action: {
           button: "Elegir",
