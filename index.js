@@ -45,7 +45,8 @@ app.post("/webhook", async (req, res) => {
             messaging_product: "whatsapp",
             to: from,
             type: "text",
-            text: { body: "Bienvenido, has llegado a *Servicio24*\nElige tu rol para continuar:\n1. Cliente\n2. Técnico" },
+            text: { 
+  body: "*Bienvenido, has llegado a Servicio24*\n\n*Elige tu rol para continuar:*\n\n1. *Cliente*\n2. *Técnico*"},
           },
           AUTH
         );
