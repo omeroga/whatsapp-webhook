@@ -15,69 +15,116 @@ const AUTH = {
   },
 };
 
-// --- GET /webhook - verification (Meta console) ---
+// פונקציות עזר
+async function sendButtons(to, bodyText, buttons) {
+  return axios.post(
+    GRAPH_URL,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: bodyText },
+        action: { buttons: buttons.map(b => ({ type: "reply", reply: b })) },
+      },
+    },
+    AUTH
+  );
+}
+
+async function sendList(to) {
+  return axios.post(
+    GRAPH_URL,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "list",
+        header: { type: "text", text: "Servicios disponibles" },
+        body: { text: "Selecciona el profesional que necesitas:" },
+        footer: { text: "Servicio24" },
+        action: {
+          button: "Elegir",
+          sections: [
+            {
+              title: "Profesionales",
+              rows: [
+                { id: "srv_fontanero", title: "🚰 Fontanero" },
+                { id: "srv_electricista", title: "💡 Electricista" },
+                { id: "srv_cerrajero", title: "🔑 Cerrajero" },
+                { id: "srv_gasista", title: "🔥 Gasista" },
+                { id: "srv_vidriero", title: "🪟 Vidriero" },
+                { id: "srv_refrigeracion", title: "❄️ Refrigeración / Aire acondicionado" },
+                { id: "srv_carpintero", title: "🪚 Carpintero" },
+                { id: "srv_albanil", title: "🧱 Albañil" },
+                { id: "srv_plaguicida", title: "🐜 Plaguicida" },
+                { id: "srv_pintor", title: "🎨 Pintor" }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    AUTH
+  );
+}
+
+async function sendText(to, body) {
+  return axios.post(
+    GRAPH_URL,
+    { messaging_product: "whatsapp", to, type: "text", text: { body } },
+    AUTH
+  );
+}
+
+// --- GET /webhook - verification ---
 app.get("/webhook", (req, res) => {
-  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-
-  if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
+  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
 });
 
-// --- POST /webhook - receive messages & auto-reply ---
+// --- POST /webhook - handle messages ---
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-    const messages = value?.messages;
-
-    if (Array.isArray(messages) && messages.length) {
+    const messages = req.body?.entry?.[0]?.changes?.[0]?.value?.messages;
+    if (Array.isArray(messages)) {
       for (const msg of messages) {
-        const from = msg.from; // מספר הוואטסאפ של השולח
+        const from = msg.from;
 
-        // שולחים הודעת פתיחה עם כפתורים
-        await axios.post(
-          GRAPH_URL,
-          {
-            messaging_product: "whatsapp",
-            to: from,
-            type: "interactive",
-            interactive: {
-              type: "button",
-              body: {
-                text: "*Bienvenido a Servicio24*\n\n*Selecciona tu rol:*",
-              },
-              action: {
-                buttons: [
-                  {
-                    type: "reply",
-                    reply: {
-                      id: "role_cliente",
-                      title: "Cliente",
-                    },
-                  },
-                  {
-                    type: "reply",
-                    reply: {
-                      id: "role_tecnico",
-                      title: "Técnico",
-                    },
-                  },
-                ],
-              },
-            },
-          },
-          AUTH
-        );
+        // אם המשתמש לחץ על כפתור פתיחה
+        if (msg.type === "interactive" && msg.interactive?.type === "button_reply") {
+          const id = msg.interactive.button_reply.id;
+          if (id === "role_cliente") {
+            // שולחים ליסט של בעלי מקצוע
+            await sendList(from);
+            continue;
+          }
+          if (id === "role_tecnico") {
+            await sendText(from, "Función de *Técnico* en construcción...");
+            continue;
+          }
+        }
+
+        // אם זו הודעת טקסט ראשונה – שולחים תפריט פתיחה (Cliente/Técnico)
+        if (msg.type === "text") {
+          await sendButtons(
+            from,
+            "*Bienvenido a Servicio24*\n\n*Selecciona tu rol:*",
+            [
+              { id: "role_cliente", title: "Cliente" },
+              { id: "role_tecnico", title: "Técnico" }
+            ]
+          );
+        }
       }
     }
-
-    // תמיד להחזיר 200 כדי שמטה לא תנסה שוב
     return res.sendStatus(200);
   } catch (err) {
     console.error("Webhook POST error:", err?.response?.data || err.message);
