@@ -22,9 +22,8 @@ async function sendText(to, body) {
   );
 }
 
-// הודעת פתיחה: רווח בין השורות ובולד בהנחיה
+// הודעת פתיחה
 async function sendButtons(to) {
-  const body = "*Bienvenido a Servicio24*\n\n*Selecciona tu rol:*";
   return axios.post(
     GRAPH_URL,
     {
@@ -33,7 +32,7 @@ async function sendButtons(to) {
       type: "interactive",
       interactive: {
         type: "button",
-        body: { text: body },
+        body: { text: "*Bienvenido a Servicio24*\n\n*Selecciona tu rol:*" },
         action: {
           buttons: [
             { type: "reply", reply: { id: "role_cliente", title: "Cliente" } },
@@ -46,7 +45,7 @@ async function sendButtons(to) {
   );
 }
 
-// תפריט הלקוחות: גרסה 2 - רווח ברור בין Header → Body, Footer מוצג בנפרד
+// תפריט הלקוחות
 async function sendClientList(to) {
   return axios.post(
     GRAPH_URL,
@@ -56,9 +55,9 @@ async function sendClientList(to) {
       type: "interactive",
       interactive: {
         type: "list",
-        header: { type: "text", text: "Servicios disponibles" }, // בלי Markdown
-        body: { text: "\n*Elige el profesional que necesitas:*" }, // רווח שורה לפני ה־Body + Bold
-        footer: { text: "Servicio24" }, // מוצג בנפרד
+        header: { type: "text", text: "*Servicios disponibles*" },
+        body: { text: "Elige el profesional que necesitas:" },
+        footer: { text: "Servicio24" },
         action: {
           button: "Elegir",
           sections: [
@@ -68,10 +67,10 @@ async function sendClientList(to) {
                 { id: "srv_plomero",      title: "🚰 Plomero" },
                 { id: "srv_electricista", title: "⚡ Electricista" },
                 { id: "srv_cerrajero",    title: "🔑 Cerrajero" },
-                { id: "srv_aire",         title: "❄️ Aire Acond." },
-                { id: "srv_mecanico",     title: "🛠️ Mecánico" }, // ← עודכן לשני כלים מוצלבים
+                { id: "srv_aire",         title: "❄️ Aire acondicionado" },
+                { id: "srv_mecanico",     title: "🛠️ Mecánico" },
                 { id: "srv_grua",         title: "🛻 Servicio de grúa" },
-                { id: "srv_mudanza",      title: "🚚 Mudanza" }
+                { id: "srv_mudanza",      title: "🚚 Mudanza" },
               ],
             },
           ],
@@ -82,71 +81,68 @@ async function sendClientList(to) {
   );
 }
 
-// תגובת אישור לפי בחירת שירות (עם רווח שורה באמצע)
+// תגובת אישור
 async function handleProfession(to, id) {
   const map = {
-    srv_plomero: "🚰 Plomero",
-    srv_electricista: "⚡ Electricista",
-    srv_cerrajero: "🔑 Cerrajero",
-    srv_aire: "❄️ Aire acondicionado",
-    srv_mecanico: "🛠️ Mecánico",
-    srv_grua: "🛻 Servicio de grúa",
-    srv_mudanza: "🚚 Mudanza",
+    srv_plomero: "Plomero",
+    srv_electricista: "Electricista",
+    srv_cerrajero: "Cerrajero",
+    srv_aire: "Aire acondicionado",
+    srv_mecanico: "Mecánico",
+    srv_grua: "Servicio de grúa",
+    srv_mudanza: "Mudanza",
   };
   const name = map[id] || "Profesional";
   return sendText(
     to,
-    `Perfecto, seleccionaste: *${name}*.\n\nEn breve te conectaremos con los proveedores más cercanos.`
+    `Perfecto, seleccionaste: *${name}*.\n\nEn breve uno de nuestros proveedores se pondrá en contacto contigo.`
   );
 }
 
-// --- GET /webhook - verification (Meta console) ---
+// --- GET /webhook
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-
   if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
 });
 
-// --- POST /webhook - receive messages & route flow ---
+// --- POST /webhook
 app.post("/webhook", async (req, res) => {
   try {
-    const messages = req.body?.entry?.[0]?.changes?.[0]?.value?.messages || [];
-    if (!Array.isArray(messages) || !messages.length) {
-      return res.sendStatus(200);
-    }
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const messages = value?.messages;
 
-    for (const msg of messages) {
-      const from = msg.from;
+    if (Array.isArray(messages) && messages.length) {
+      for (const msg of messages) {
+        const from = msg.from;
 
-      // תגובה אינטראקטיבית (כפתורים / ליסט)
-      if (msg.type === "interactive") {
-        const btnId  = msg.interactive?.button_reply?.id;
-        const listId = msg.interactive?.list_reply?.id;
-
-        if (btnId === "role_cliente") {
-          await sendClientList(from);
-          continue;
+        if (msg.type === "text") {
+          await sendButtons(from);
         }
-        if (btnId === "role_tecnico") {
-          await sendText(from, "Función de *Técnico* en construcción…");
-          continue;
-        }
-        if (listId) {
-          await handleProfession(from, listId);
-          continue;
-        }
-      }
 
-      // כל טקסט חופשי פותח את תפריט התפקידים
-      if (msg.type === "text") {
-        await sendButtons(from);
-        continue;
+        if (msg.type === "interactive") {
+          const id = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
+
+          if (id === "role_cliente") {
+            await sendClientList(from);
+            continue;
+          }
+          if (id === "role_tecnico") {
+            await sendText(from, "Función de *Técnico* en construcción...");
+            continue;
+          }
+          if (id) {
+            await handleProfession(from, id);
+            continue;
+          }
+        }
       }
     }
 
