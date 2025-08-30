@@ -5,7 +5,7 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// --- consts / helpers ---
+// --------- Consts / Helpers ----------
 const GRAPH_URL = `https://graph.facebook.com/v${process.env.GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
 const AUTH = {
   headers: {
@@ -14,16 +14,17 @@ const AUTH = {
   },
 };
 
-async function sendText(to, body) {
+// Send plain text
+async function sendText(to, text) {
   return axios.post(
     GRAPH_URL,
-    { messaging_product: "whatsapp", to, type: "text", text: { body } },
+    { messaging_product: "whatsapp", to, type: "text", text: { body: text } },
     AUTH
   );
 }
 
-// הודעת פתיחה
-async function sendButtons(to) {
+// Opening buttons: Cliente / Técnico
+async function sendRoleButtons(to) {
   return axios.post(
     GRAPH_URL,
     {
@@ -32,20 +33,22 @@ async function sendButtons(to) {
       type: "interactive",
       interactive: {
         type: "button",
-        body: { text: "*Bienvenido a Servicio24*\n\n*Selecciona tu rol:*" },
+        header: { type: "text", text: "Bienvenido a Servicio24" }, // ללא Markdown
+        body: { text: "*Selecciona tu rol:*\n" }, // Bold + רווח שורה מהכותרת
         action: {
           buttons: [
             { type: "reply", reply: { id: "role_cliente", title: "Cliente" } },
             { type: "reply", reply: { id: "role_tecnico", title: "Técnico" } },
           ],
         },
+        footer: { text: "Servicio24" },
       },
     },
     AUTH
   );
 }
 
-// תפריט הלקוחות
+// List for Cliente: 7 מקצועות עם אימוג'ים נכונים
 async function sendClientList(to) {
   return axios.post(
     GRAPH_URL,
@@ -55,8 +58,8 @@ async function sendClientList(to) {
       type: "interactive",
       interactive: {
         type: "list",
-        header: { type: "text", text: "*Servicios disponibles*" },
-        body: { text: "Elige el profesional que necesitas:" },
+        header: { type: "text", text: "Servicios disponibles" }, // ללא Markdown
+        body: { text: "\n*Elige el profesional que necesitas:*" }, // רווח שורה לפני ה-body + Bold
         footer: { text: "Servicio24" },
         action: {
           button: "Elegir",
@@ -64,13 +67,13 @@ async function sendClientList(to) {
             {
               title: "Profesionales",
               rows: [
-                { id: "srv_plomero",      title: "🚰 Plomero" },
-                { id: "srv_electricista", title: "⚡ Electricista" },
-                { id: "srv_cerrajero",    title: "🔑 Cerrajero" },
-                { id: "srv_aire",         title: "❄️ Aire acondicionado" },
-                { id: "srv_mecanico",     title: "🛠️ Mecánico" },
-                { id: "srv_grua",         title: "🛻 Servicio de grúa" },
-                { id: "srv_mudanza",      title: "🚚 Mudanza" },
+                { id: "srv_plomero",      title: "🚰  Plomero" },
+                { id: "srv_electricista", title: "⚡  Electricista" },
+                { id: "srv_cerrajero",    title: "🔑  Cerrajero" },
+                { id: "srv_aire",         title: "❄️  Aire acondicionado" },
+                { id: "srv_mecanico",     title: "🛠️  Mecánico" },
+                { id: "srv_grua",         title: "🛻  Servicio de grúa" },
+                { id: "srv_mudanza",      title: "🚚  Mudanza" },
               ],
             },
           ],
@@ -81,7 +84,7 @@ async function sendClientList(to) {
   );
 }
 
-// תגובת אישור
+// לאחר בחירת מקצוע – אישור קצר ללקוח
 async function handleProfession(to, id) {
   const map = {
     srv_plomero: "Plomero",
@@ -92,26 +95,29 @@ async function handleProfession(to, id) {
     srv_grua: "Servicio de grúa",
     srv_mudanza: "Mudanza",
   };
+
   const name = map[id] || "Profesional";
+
   return sendText(
     to,
-    `Perfecto, seleccionaste: *${name}*.\n\nEn breve uno de nuestros proveedores se pondrá en contacto contigo.`
+    `*Perfecto*, seleccionaste: *${name}*.\n\nEn breve te contactarán 1–3 proveedores cercanos.`
   );
 }
 
-// --- GET /webhook
+// --------- Webhook: GET (verify) ----------
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-  if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
 });
 
-// --- POST /webhook
+// --------- Webhook: POST (messages) ----------
 app.post("/webhook", async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
@@ -123,22 +129,32 @@ app.post("/webhook", async (req, res) => {
       for (const msg of messages) {
         const from = msg.from;
 
+        // 1) טקסט חופשי -> תפריט תפקידים
         if (msg.type === "text") {
-          await sendButtons(from);
+          await sendRoleButtons(from);
+          continue;
         }
 
-        if (msg.type === "interactive") {
-          const id = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
+        // 2) תגובת כפתור
+        const interactive = msg.interactive;
+        if (interactive?.type === "button_reply") {
+          const id = interactive.button_reply?.id;
 
           if (id === "role_cliente") {
             await sendClientList(from);
             continue;
           }
+
           if (id === "role_tecnico") {
-            await sendText(from, "Función de *Técnico* en construcción...");
+            await sendText(from, "La función de *Técnico* está en construcción…");
             continue;
           }
-          if (id) {
+        }
+
+        // 3) תגובת רשימה (בחירת מקצוע)
+        if (interactive?.type === "list_reply") {
+          const id = interactive.list_reply?.id;
+          if (id?.startsWith("srv_")) {
             await handleProfession(from, id);
             continue;
           }
@@ -153,6 +169,6 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// --- server ---
+// --------- Server ----------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
