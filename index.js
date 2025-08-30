@@ -51,7 +51,7 @@ async function sendList(to) {
             {
               title: "Profesionales",
               rows: [
-                { id: "srv_fontanero", title: "🚰 Fontanero" },
+                { id: "srv_fontanero", title: "🚰 Plomero" },
                 { id: "srv_electricista", title: "💡 Electricista" },
                 { id: "srv_cerrajero", title: "🔑 Cerrajero" },
                 { id: "srv_gasista", title: "🔥 Gasista" },
