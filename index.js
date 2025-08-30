@@ -5,8 +5,9 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// ENV: GRAPH_VERSION (e.g. v23.0), PHONE_NUMBER_ID, WHATSAPP_TOKEN, VERIFY_TOKEN
-const GRAPH_URL = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
+// --- helpers / consts ---
+const API_VERSION = (process.env.GRAPH_VERSION || "23.0").replace(/^v/i, "");
+const GRAPH_URL = `https://graph.facebook.com/v${API_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
 const AUTH = {
   headers: {
     Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
@@ -14,92 +15,69 @@ const AUTH = {
   },
 };
 
-// simple in-memory session per phone
-const sessions = new Map();
-
-async function sendWelcomeButtons(to) {
-  return axios.post(
-    GRAPH_URL,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: "Bienvenido a Servicio24\n\nSelecciona tu rol" },
-        action: {
-          buttons: [
-            { type: "reply", reply: { id: "role_cliente", title: "Cliente" } },
-            { type: "reply", reply: { id: "role_tecnico", title: "Técnico" } },
-          ],
-        },
-      },
-    },
-    AUTH
-  );
-}
-
-async function sendText(to, body) {
-  return axios.post(
-    GRAPH_URL,
-    { messaging_product: "whatsapp", to, type: "text", text: { body } },
-    AUTH
-  );
-}
-
-// GET /webhook for verification
+// --- GET /webhook - verification (Meta console) ---
 app.get("/webhook", (req, res) => {
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
+
+  if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
 });
 
-// POST /webhook for messages
+// --- POST /webhook - receive messages & auto-reply ---
 app.post("/webhook", async (req, res) => {
   try {
-    const changes = req.body?.entry?.[0]?.changes;
-    const messages = changes?.[0]?.value?.messages;
-    if (Array.isArray(messages)) {
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const messages = value?.messages;
+
+    if (Array.isArray(messages) && messages.length) {
       for (const msg of messages) {
-        const from = msg.from;
-        const sess = sessions.get(from) || { menuShown: false, role: null };
+        const from = msg.from; // מספר הוואטסאפ של השולח
 
-        // button reply
-        if (msg.type === "interactive" && msg.interactive?.type === "button_reply") {
-          const id = msg.interactive.button_reply.id;
-          if (id === "role_cliente") {
-            sess.role = "cliente";
-            sessions.set(from, sess);
-            await sendText(from, "Perfecto ✅\nHas elegido *Cliente*.");
-            continue;
-          }
-          if (id === "role_tecnico") {
-            sess.role = "tecnico";
-            sessions.set(from, sess);
-            await sendText(from, "Perfecto ✅\nHas elegido *Técnico*.");
-            continue;
-          }
-        }
-
-        // first text from user or explicit ask for menu
-        if (msg.type === "text") {
-          const body = (msg.text?.body || "").trim().toLowerCase();
-          const wantsMenu = ["menu", "menú", "inicio", "start"].includes(body);
-          if (!sess.menuShown || wantsMenu) {
-            await sendWelcomeButtons(from);
-            sess.menuShown = true;
-            sessions.set(from, sess);
-            continue;
-          }
-        }
-
-        // ignore other message types for now
+        // שולחים הודעת פתיחה עם כפתורים
+        await axios.post(
+          GRAPH_URL,
+          {
+            messaging_product: "whatsapp",
+            to: from,
+            type: "interactive",
+            interactive: {
+              type: "button",
+              body: {
+                text: "*Bienvenido a Servicio24*\n\nSelecciona tu rol:",
+              },
+              action: {
+                buttons: [
+                  {
+                    type: "reply",
+                    reply: {
+                      id: "role_cliente",
+                      title: "Cliente",
+                    },
+                  },
+                  {
+                    type: "reply",
+                    reply: {
+                      id: "role_tecnico",
+                      title: "Técnico",
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          AUTH
+        );
       }
     }
+
+    // תמיד להחזיר 200 כדי שמטה לא תנסה שוב
     return res.sendStatus(200);
   } catch (err) {
     console.error("Webhook POST error:", err?.response?.data || err.message);
@@ -107,5 +85,6 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
+// --- server ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
