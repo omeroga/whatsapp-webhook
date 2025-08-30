@@ -5,7 +5,7 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// --- consts / helpers ---
+// ---------- consts / helpers ----------
 const GRAPH_URL = `https://graph.facebook.com/v${process.env.GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
 const AUTH = {
   headers: {
@@ -22,8 +22,9 @@ async function sendText(to, body) {
   );
 }
 
-// הודעת פתיחה עם כפתורים לבחירת תפקיד
-async function sendRoleButtons(to) {
+// הודעת פתיחה (רווחים ובולד בשתי השורות)
+async function sendButtons(to) {
+  const body = "*Bienvenido a Servicio24*\n\n*Selecciona tu rol:*";
   return axios.post(
     GRAPH_URL,
     {
@@ -32,7 +33,7 @@ async function sendRoleButtons(to) {
       type: "interactive",
       interactive: {
         type: "button",
-        body: { text: "*Bienvenido a Servicio24*\n\n*Selecciona tu rol:*" },
+        body: { text: body },
         action: {
           buttons: [
             { type: "reply", reply: { id: "role_cliente", title: "Cliente" } },
@@ -45,7 +46,7 @@ async function sendRoleButtons(to) {
   );
 }
 
-// רשימת מקצועות ללקוח (7 ספקים עם אימוג׳ים)
+// תפריט לקוח – 7 ספקים, רווח שורה מה-header, בולד ב-body
 async function sendClientList(to) {
   return axios.post(
     GRAPH_URL,
@@ -55,8 +56,8 @@ async function sendClientList(to) {
       type: "interactive",
       interactive: {
         type: "list",
-        header: { type: "text", text: "Servicios disponibles" },
-        body: { text: "\nElige el profesional que necesitas" }, // רווח מה-header
+        header: { type: "text", text: "Servicios disponibles" }, // בלי Markdown
+        body: { text: "\n*Elige el profesional que necesitas:*" },
         footer: { text: "Servicio24" },
         action: {
           button: "Elegir",
@@ -71,35 +72,35 @@ async function sendClientList(to) {
                 { id: "srv_mecanico",     title: "🔧 Mecánico" },
                 { id: "srv_grua",         title: "🛻 Servicio de grúa" },
                 { id: "srv_mudanza",      title: "🚚 Mudanza" }
-              ]
-            }
-          ]
-        }
-      }
+              ],
+            },
+          ],
+        },
+      },
     },
     AUTH
   );
 }
 
-// תגובה לכל מקצוע
+// תגובת אישור לפי בחירה
 async function handleProfession(to, id) {
   const map = {
-    srv_plomero: "Plomero",
-    srv_electricista: "Electricista",
-    srv_cerrajero: "Cerrajero",
-    srv_aire: "Aire acondicionado",
-    srv_mecanico: "Mecánico",
-    srv_grua: "Servicio de grúa",
-    srv_mudanza: "Mudanza",
+    srv_plomero: "🚰 Plomero",
+    srv_electricista: "⚡ Electricista",
+    srv_cerrajero: "🔑 Cerrajero",
+    srv_aire: "❄️ Aire acondicionado",
+    srv_mecanico: "🔧 Mecánico",
+    srv_grua: "🛻 Servicio de grúa",
+    srv_mudanza: "🚚 Mudanza",
   };
   const name = map[id] || "Profesional";
   return sendText(
     to,
-    `Perfecto, seleccionaste: *${name}*.\nEn breve te conectaremos con los proveedores más cercanos.`
+    `Perfecto, seleccionaste: *${name}*.\n\nEn breve te contactarán los técnicos disponibles…`
   );
 }
 
-// --- GET /webhook (verification) ---
+// ---------- GET /webhook (verification) ----------
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
   const mode = req.query["hub.mode"];
@@ -111,47 +112,52 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// --- POST /webhook (messages) ---
+// ---------- POST /webhook (events) ----------
 app.post("/webhook", async (req, res) => {
   try {
-    const messages = req.body?.entry?.[0]?.changes?.[0]?.value?.messages || [];
-    if (!Array.isArray(messages) || !messages.length) {
-      return res.sendStatus(200);
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const messages = value?.messages;
+
+    if (Array.isArray(messages) && messages.length) {
+      for (const msg of messages) {
+        const from = msg.from;
+
+        // אינטראקטיב: כפתורים/רשימה
+        if (msg.type === "interactive") {
+          const btn = msg.interactive?.button_reply;
+          const list = msg.interactive?.list_reply;
+
+          if (btn?.id === "role_cliente") {
+            await sendClientList(from);
+            continue;
+          }
+          if (btn?.id === "role_tecnico") {
+            await sendText(from, "Función de *Técnico* en construcción…");
+            continue;
+          }
+          if (list?.id) {
+            await handleProfession(from, list.id);
+            continue;
+          }
+        }
+
+        // ברירת מחדל: כל טקסט פותח את בחירת התפקיד
+        if (msg.type === "text") {
+          await sendButtons(from);
+          continue;
+        }
+      }
     }
 
-    for (const msg of messages) {
-      const from = msg.from;
-      const type = msg.type;
-
-      if (type === "text") {
-        await sendRoleButtons(from);
-      }
-
-      if (type === "interactive") {
-        const id = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
-
-        if (id === "role_cliente") {
-          await sendClientList(from);
-          continue;
-        }
-        if (id === "role_tecnico") {
-          await sendText(from, "Función de *Técnico* en construcción...");
-          continue;
-        }
-        if (id?.startsWith("srv_")) {
-          await handleProfession(from, id);
-          continue;
-        }
-      }
-    }
-
-    return res.sendStatus(200);
+    return res.sendStatus(200); // תמיד 200 כדי למנוע ריטריים
   } catch (err) {
     console.error("Webhook POST error:", err?.response?.data || err.message);
     return res.sendStatus(200);
   }
 });
 
-// --- server ---
+// ---------- server ----------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
