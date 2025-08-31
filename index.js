@@ -1,4 +1,13 @@
 // index.js
+// === Servicio24: emojis oficiales (NO CAMBIAR sin instrucción) ===
+// 🚰  Plomero
+// ⚡  Electricista
+// 🔑  Cerrajero
+// ❄️  Aire acondicionado
+// 🛠️  Mecánico
+// 🛻  Servicio de grúa
+// 🚚  Mudanza
+
 const express = require("express");
 const axios = require("axios");
 
@@ -13,27 +22,6 @@ const AUTH = {
     "Content-Type": "application/json",
   },
 };
-
-  // ברירת מחדל: אורגני
-  let source = "organic";
-  let serviceId = null;
-
-  // אם בהודעה נכנס hashtag תפור על קמפיין (#electricista, #plomero וכו')
-  if (msg.text?.body) {
-    const text = msg.text.body.toLowerCase();
-    if (text.includes("#electricista")) serviceId = "srv_electricista";
-    if (text.includes("#plomero")) serviceId = "srv_plomero";
-    if (text.includes("#cerrajero")) serviceId = "srv_cerrajero";
-    if (text.includes("#aire")) serviceId = "srv_aire";
-    if (text.includes("#mecanico")) serviceId = "srv_mecanico";
-    if (text.includes("#grua")) serviceId = "srv_grua";
-    if (text.includes("#mudanza")) serviceId = "srv_mudanza";
-
-    if (serviceId) source = "paid"; // הגדרה כמודעה ממומנת
-  }
-
-  return { source, serviceId };
-}
 
 // === session memory to avoid re-sending the welcome ===
 const SESSION_TTL_MS = 15 * 60 * 1000; // 15 minutes
@@ -138,7 +126,7 @@ const SERVICE_WORDS = {
   cerrajero: "srv_cerrajero",
   aire: "srv_aire",          // "aire acondicionado"
   mecanico: "srv_mecanico",
-  mecánico: "srv_mecanico",  // גרסה עם דגש
+  mecánico: "srv_mecanico",  // con tilde
   grua: "srv_grua",
   grúa: "srv_grua",
   mudanza: "srv_mudanza",
@@ -147,6 +135,7 @@ const SERVICE_WORDS = {
 function parseOriginAndIntent(msg) {
   const out = { source: "organic", serviceId: null, zone: null };
 
+  // paid via referral or prefilled text
   if (msg.referral) {
     out.source = "paid";
     const pre = msg.text?.body || "";
@@ -154,6 +143,7 @@ function parseOriginAndIntent(msg) {
     return out;
   }
 
+  // organic text that may include hashtags like #plomero z7
   if (msg.type === "text") {
     const text = msg.text?.body || "";
     extractFromText(text, out);
@@ -165,6 +155,7 @@ function parseOriginAndIntent(msg) {
 function extractFromText(text, out) {
   const low = (text || "").toLowerCase();
 
+  // service
   for (const key of Object.keys(SERVICE_WORDS)) {
     if (low.includes(`#${key}`)) {
       out.serviceId = SERVICE_WORDS[key];
@@ -172,6 +163,7 @@ function extractFromText(text, out) {
     }
   }
 
+  // zona 1-25 (z7, zona 7, etc.)
   const zMatch = low.match(/\b(?:zona\s*)?z?(\d{1,2})\b/);
   if (zMatch) {
     const n = parseInt(zMatch[1], 10);
@@ -209,38 +201,19 @@ app.post("/webhook", async (req, res) => {
       for (const msg of messages) {
         const from = msg.from;
 
-        // --- לזהות מקור (אורגני / ממומן) ושירות ---
-  const intent = parseOriginAndIntent(msg);
+        // detect origin (organic vs paid)
+        const intent = parseOriginAndIntent(msg);
 
-  if (intent.source === "paid") {
-    // אם זה ליד ממומן -> ישר שולח שירות ספציפי
-    if (intent.serviceId) {
-      await handleProfession(from, intent.serviceId);
-    } else {
-      // fallback: אם אין serviceId, שולחים תפריט כללי
-      await sendClientList(from);
-    }
-    sessions.set(from, { lastWelcome: Date.now() });
-    continue;
-  }
+        if (intent.source === "paid") {
+          if (intent.serviceId) {
+            await handleProfession(from, intent.serviceId);
+          } else {
+            await sendClientList(from);
+          }
+          sessions.set(from, { lastWelcome: Date.now() });
+          continue;
+        }
 
-  // אם זה אורגני -> ממשיכים עם הלוגיקה הקיימת (תפריט תפקידים וכו')
-
-// אם הגיע מקמפיין ממומן:
-if (intent.source === "paid") {
-  // אם יש שירות מפוענח (#electricista / #plomero וכו') - דלג ישר לשלב הבא של הלקוח
-  if (intent.serviceId) {
-    await handleProfession(from, intent.serviceId);
-  } else {
-    // אין שירות מפורש - תן תפריט לקוח (שיש בו 7 השירותים)
-    await sendClientList(from);
-  }
-
-  // עדכן TTL כדי לא לירות שוב פתיחים
-  sessions.set(from, { lastWelcome: Date.now() });
-  continue;
-}
-        
         // 1) Free text -> role menu (with throttle memory)
         if (msg.type === "text") {
           const now = Date.now();
@@ -262,11 +235,13 @@ if (intent.source === "paid") {
 
           if (id === "role_cliente") {
             await sendClientList(from);
+            sessions.set(from, { lastWelcome: Date.now() });
             continue;
           }
 
           if (id === "role_tecnico") {
             await sendText(from, "La función de *Técnico* está en construcción…");
+            sessions.set(from, { lastWelcome: Date.now() });
             continue;
           }
         }
@@ -277,6 +252,7 @@ if (intent.source === "paid") {
 
           if (id?.startsWith("srv_")) {
             await handleProfession(from, id);
+            sessions.set(from, { lastWelcome: Date.now() });
             continue;
           }
         }
