@@ -23,10 +23,9 @@ const AUTH = {
   },
 };
 
-// === session memory ===
-// key: user number, value: { lastWelcome, pendingService, pendingZone }
-const SESSION_TTL_MS = 15 * 60 * 1000;
-const sessions = new Map();
+// === session memory to avoid re-sending the welcome ===
+const SESSION_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const sessions = new Map(); // key: user number, value: { lastWelcome: timestamp }
 
 // --------- Senders ----------
 async function sendText(to, text) {
@@ -84,13 +83,13 @@ async function sendClientList(to) {
             {
               title: "Profesionales",
               rows: [
-                { id: "srv_plomero",      title: "🚰  Plomero" },
+                { id: "srv_plomero", title: "🚰  Plomero" },
                 { id: "srv_electricista", title: "⚡  Electricista" },
-                { id: "srv_cerrajero",    title: "🔑  Cerrajero" },
-                { id: "srv_aire",         title: "❄️  Aire acondicionado" },
-                { id: "srv_mecanico",     title: "🛠️  Mecánico" },
-                { id: "srv_grua",         title: "🛻  Servicio de grúa" },
-                { id: "srv_mudanza",      title: "🚚  Mudanza" },
+                { id: "srv_cerrajero", title: "🔑  Cerrajero" },
+                { id: "srv_aire", title: "❄️  Aire acondicionado" },
+                { id: "srv_mecanico", title: "🛠️  Mecánico" },
+                { id: "srv_grua", title: "🛻  Servicio de grúa" },
+                { id: "srv_mudanza", title: "🚚  Mudanza" },
               ],
             },
           ],
@@ -127,39 +126,8 @@ async function sendZonaGroupButtons(to) {
   );
 }
 
-// --------- Zona list (exact choice within a group) ----------
-async function sendZonaList(to, start, end) {
-  const rows = [];
-  for (let i = start; i <= end; i++) {
-    rows.push({ id: `zona_pick_${i}`, title: `Zona ${i}` });
-  }
-  const headerText = `Zonas ${start}–${end}`;
-
-  return axios.post(
-    GRAPH_URL,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "list",
-        header: { type: "text", text: headerText },
-        body:   { text: "*Elige tu zona exacta:*" },
-        footer: { text: "Servicio24" },
-        action: {
-          button: "Elegir zona",
-          sections: [
-            { title: "Zonas disponibles", rows }
-          ]
-        }
-      }
-    },
-    AUTH
-  );
-}
-
-// --------- Zona confirm (Confirmar / Cambiar / Ver otros servicios) ----------
-async function sendZonaConfirm(to, zoneNumber) {
+// --------- Confirm Zona (ORGÁNICO) ----------
+async function confirmZonaOrganic(to, zona) {
   return axios.post(
     GRAPH_URL,
     {
@@ -168,14 +136,13 @@ async function sendZonaConfirm(to, zoneNumber) {
       type: "interactive",
       interactive: {
         type: "button",
-        header: { type: "text", text: `Zona seleccionada: ${zoneNumber}` },
-        body:   { text: "¿Desea continuar con esta zona?" },
+        header: { type: "text", text: `Zona seleccionada: ${zona}` },
+        body: { text: "¿Desea continuar con esta zona?" },
         footer: { text: "Servicio24" },
         action: {
           buttons: [
-            { type: "reply", reply: { id: `zona_confirm_${zoneNumber}`, title: "Confirmar" } },
-            { type: "reply", reply: { id: "zona_change",                title: "Cambiar zona" } },
-            { type: "reply", reply: { id: "zona_other_services",        title: "Ver otros servicios" } },
+            { type: "reply", reply: { id: `zona_ok_${zona}`, title: "Confirmar" } },
+            { type: "reply", reply: { id: "zona_cambiar", title: "Cambiar zona" } },
           ],
         },
       },
@@ -184,24 +151,19 @@ async function sendZonaConfirm(to, zoneNumber) {
   );
 }
 
-// --------- Service name map (shared) ----------
-const SERVICE_NAME_MAP = {
-  srv_plomero: "Plomero",
-  srv_electricista: "Electricista",
-  srv_cerrajero: "Cerrajero",
-  srv_aire: "Aire acondicionado",
-  srv_mecanico: "Mecánico",
-  srv_grua: "Servicio de grúa",
-  srv_mudanza: "Mudanza",
-};
-
 // --------- Profesiones ----------
 async function handleProfession(to, id) {
-  const name = SERVICE_NAME_MAP[id] || "Profesional";
+  const map = {
+    srv_plomero: "Plomero",
+    srv_electricista: "Electricista",
+    srv_cerrajero: "Cerrajero",
+    srv_aire: "Aire acondicionado",
+    srv_mecanico: "Mecánico",
+    srv_grua: "Servicio de grúa",
+    srv_mudanza: "Mudanza",
+  };
 
-  // שמירת שירות שנבחר
-  const prev = sessions.get(to) || {};
-  sessions.set(to, { ...prev, pendingService: id });
+  const name = map[id] || "Profesional";
 
   await sendText(
     to,
@@ -289,141 +251,67 @@ app.post("/webhook", async (req, res) => {
       for (const msg of messages) {
         const from = msg.from;
 
-        // detect origin (organic vs paid)
         const intent = parseOriginAndIntent(msg);
 
         if (intent.source === "paid") {
-          const prev = sessions.get(from) || {};
-
-          if (intent.serviceId && intent.zone) {
-            const zoneNum = parseInt(intent.zone.replace("z", ""), 10);
-            sessions.set(from, { ...prev, pendingService: intent.serviceId, pendingZone: zoneNum });
-
-            await sendText(from, `*Perfecto*, seleccionaste: *${SERVICE_NAME_MAP[intent.serviceId] || "Profesional"}*.`);
-            await sendZonaConfirm(from, zoneNum);
-            continue;
-          }
-
-          if (intent.serviceId && !intent.zone) {
-            sessions.set(from, { ...prev, pendingService: intent.serviceId });
-            await sendText(from, `*Perfecto*, seleccionaste: *${SERVICE_NAME_MAP[intent.serviceId] || "Profesional"}*.\n\nAhora selecciona tu zona para encontrar proveedores cercanos.`);
-            await sendZonaGroupButtons(from);
-            continue;
-          }
-
-          if (!intent.serviceId && intent.zone) {
-            const zoneNum = parseInt(intent.zone.replace("z", ""), 10);
-            sessions.set(from, { ...prev, pendingZone: zoneNum });
-            await sendText(from, `Zona detectada: *${zoneNum}*.\n\nElige el servicio que necesitas:`);
+          if (intent.serviceId) {
+            await handleProfession(from, intent.serviceId);
+          } else {
             await sendClientList(from);
-            continue;
           }
-
-          // fallback paid
-          sessions.set(from, { ...prev, lastWelcome: Date.now() });
-          await sendClientList(from);
+          sessions.set(from, { lastWelcome: Date.now() });
           continue;
         }
 
-        // 1) Free text -> role menu (with throttle memory)
         if (msg.type === "text") {
           const now = Date.now();
           const session = sessions.get(from);
 
           if (!session || now - session.lastWelcome > SESSION_TTL_MS) {
             await sendRoleButtons(from);
-            sessions.set(from, { ...(session || {}), lastWelcome: now });
+            sessions.set(from, { lastWelcome: now });
           }
 
           continue;
         }
 
-        // 2) Button replies (role selection, zona groups, confirm)
         const interactive = msg.interactive;
 
         if (interactive?.type === "button_reply") {
           const id = interactive.button_reply?.id;
 
-          // role selection
           if (id === "role_cliente") {
             await sendClientList(from);
-            const prev = sessions.get(from) || {};
-            sessions.set(from, { ...prev, lastWelcome: Date.now() });
+            sessions.set(from, { lastWelcome: Date.now() });
             continue;
           }
 
           if (id === "role_tecnico") {
             await sendText(from, "La función de *Técnico* está en construcción…");
-            const prev = sessions.get(from) || {};
-            sessions.set(from, { ...prev, lastWelcome: Date.now() });
+            sessions.set(from, { lastWelcome: Date.now() });
             continue;
           }
 
-          // zona groups -> open list
           if (id === "zona_group_1_10") {
-            await sendZonaList(from, 1, 10);
+            await confirmZonaOrganic(from, "1–10");
             continue;
           }
           if (id === "zona_group_11_20") {
-            await sendZonaList(from, 11, 20);
+            await confirmZonaOrganic(from, "11–20");
             continue;
           }
           if (id === "zona_group_21_25") {
-            await sendZonaList(from, 21, 25);
-            continue;
-          }
-
-          // confirm or change or other services
-          if (id === "zona_change") {
-            await sendZonaGroupButtons(from);
-            continue;
-          }
-
-          if (id === "zona_other_services") {
-            await sendClientList(from);
-            continue;
-          }
-
-          if (id.startsWith("zona_confirm_")) {
-            const zoneNumber = parseInt(id.replace("zona_confirm_", ""), 10);
-            const sess = sessions.get(from) || {};
-            const serviceId = sess.pendingService;
-            const serviceName = SERVICE_NAME_MAP[serviceId] || "Profesional";
-
-            // כאן תגיע אינטגרציית שליחת הליד לספקים הרלוונטיים
-            await sendText(
-              from,
-              `Listo. Te conectaremos con 1–3 proveedores de *${serviceName}* en *Zona ${zoneNumber}*.`
-            );
-
-            // reset pending selections
-            sessions.set(from, { lastWelcome: Date.now() });
+            await confirmZonaOrganic(from, "21–25");
             continue;
           }
         }
 
-        // 3) List reply (profession or zona exacta)
         if (interactive?.type === "list_reply") {
           const id = interactive.list_reply?.id;
 
-          // profession selection
           if (id?.startsWith("srv_")) {
             await handleProfession(from, id);
-            const prev = sessions.get(from) || {};
-            sessions.set(from, { ...prev, lastWelcome: Date.now() });
-            continue;
-          }
-
-          // zona exacta selection
-          if (id?.startsWith("zona_pick_")) {
-            const zoneNumber = parseInt(id.replace("zona_pick_", ""), 10);
-
-            // save pending zone
-            const prev = sessions.get(from) || {};
-            sessions.set(from, { ...prev, pendingZone: zoneNumber });
-
-            // show confirm/change/other-services buttons
-            await sendZonaConfirm(from, zoneNumber);
+            sessions.set(from, { lastWelcome: Date.now() });
             continue;
           }
         }
