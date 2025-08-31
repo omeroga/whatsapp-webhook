@@ -14,6 +14,29 @@ const AUTH = {
   },
 };
 
+// === Intent detection (organic vs paid) ===
+function parseOriginAndIntent(msg) {
+  // ברירת מחדל: אורגני
+  let source = "organic";
+  let serviceId = null;
+
+  // אם בהודעה נכנס hashtag תפור על קמפיין (#electricista, #plomero וכו')
+  if (msg.text?.body) {
+    const text = msg.text.body.toLowerCase();
+    if (text.includes("#electricista")) serviceId = "srv_electricista";
+    if (text.includes("#plomero")) serviceId = "srv_plomero";
+    if (text.includes("#cerrajero")) serviceId = "srv_cerrajero";
+    if (text.includes("#aire")) serviceId = "srv_aire";
+    if (text.includes("#mecanico")) serviceId = "srv_mecanico";
+    if (text.includes("#grua")) serviceId = "srv_grua";
+    if (text.includes("#mudanza")) serviceId = "srv_mudanza";
+
+    if (serviceId) source = "paid"; // הגדרה כמודעה ממומנת
+  }
+
+  return { source, serviceId };
+}
+
 // === session memory to avoid re-sending the welcome ===
 const SESSION_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const sessions = new Map(); // key: user number, value: { lastWelcome: timestamp }
@@ -187,6 +210,22 @@ app.post("/webhook", async (req, res) => {
     if (Array.isArray(messages) && messages.length) {
       for (const msg of messages) {
         const from = msg.from;
+
+        // --- לזהות מקור (אורגני / ממומן) ושירות ---
+  const intent = parseOriginAndIntent(msg);
+
+  if (intent.source === "paid") {
+    // אם זה ליד ממומן -> ישר שולח שירות ספציפי
+    if (intent.serviceId) {
+      await handleProfession(from, intent.serviceId);
+    } else {
+      // fallback: אם אין serviceId, שולחים תפריט כללי
+      await sendClientList(from);
+    }
+    continue;
+  }
+
+  // אם זה אורגני -> ממשיכים עם הלוגיקה הקיימת (תפריט תפקידים וכו')
         
         // --- detect origin (organic vs paid) and optional intent ---
 const intent = parseOriginAndIntent(msg);
