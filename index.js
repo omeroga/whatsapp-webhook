@@ -100,6 +100,33 @@ async function sendClientList(to) {
   );
 }
 
+// --------- Zona selection (grouped 1–10, 11–20, 21–25) ----------
+async function sendZonaGroupButtons(to) {
+  return axios.post(
+    GRAPH_URL,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        header: { type: "text", text: "Selecciona tu zona" },
+        body: { text: "Elige el rango de zona correspondiente:" },
+        footer: { text: "Servicio24" },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: "zona_group_1_10", title: "Zona 1–10" } },
+            { type: "reply", reply: { id: "zona_group_11_20", title: "Zona 11–20" } },
+            { type: "reply", reply: { id: "zona_group_21_25", title: "Zona 21–25" } },
+          ],
+        },
+      },
+    },
+    AUTH
+  );
+}
+
+// --------- Profesiones ----------
 async function handleProfession(to, id) {
   const map = {
     srv_plomero: "Plomero",
@@ -113,10 +140,14 @@ async function handleProfession(to, id) {
 
   const name = map[id] || "Profesional";
 
-  return sendText(
+  // שלב 1 - אישור בחירת מקצוע
+  await sendText(
     to,
-    `*Perfecto*, seleccionaste: *${name}*.\n\nEn breve te contactarán 1–3 proveedores cercanos.`
+    `*Perfecto*, seleccionaste: *${name}*.\n\nAhora selecciona tu zona para encontrar proveedores cercanos.`
   );
+
+  // שלב 2 - פתיחת תפריט קבוצות zonas (3 כפתורים)
+  await sendZonaGroupButtons(to);
 }
 
 // --- intent & source detection (organic vs paid) ---
