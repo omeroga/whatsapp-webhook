@@ -110,6 +110,58 @@ async function handleProfession(to, id) {
   );
 }
 
+// --- intent & source detection (organic vs paid) ---
+const SERVICE_WORDS = {
+  plomero: "srv_plomero",
+  electricista: "srv_electricista",
+  cerrajero: "srv_cerrajero",
+  aire: "srv_aire",          // "aire acondicionado"
+  mecanico: "srv_mecanico",
+  mecánico: "srv_mecanico",  // גרסה עם דגש
+  grua: "srv_grua",
+  grúa: "srv_grua",
+  mudanza: "srv_mudanza",
+};
+
+function parseOriginAndIntent(msg) {
+  const out = { source: "organic", serviceId: null, zone: null };
+
+  if (msg.referral) {
+    out.source = "paid";
+    const pre = msg.text?.body || "";
+    extractFromText(pre, out);
+    return out;
+  }
+
+  if (msg.type === "text") {
+    const text = msg.text?.body || "";
+    extractFromText(text, out);
+  }
+
+  return out;
+}
+
+function extractFromText(text, out) {
+  const low = (text || "").toLowerCase();
+
+  for (const key of Object.keys(SERVICE_WORDS)) {
+    if (low.includes(`#${key}`)) {
+      out.serviceId = SERVICE_WORDS[key];
+      break;
+    }
+  }
+
+  const zMatch = low.match(/\b(?:zona\s*)?z?(\d{1,2})\b/);
+  if (zMatch) {
+    const n = parseInt(zMatch[1], 10);
+    if (n >= 1 && n <= 25) out.zone = `z${n}`;
+  }
+
+  if (out.serviceId || out.zone) {
+    out.source = "paid";
+  }
+}
+
 // --------- Webhook: GET (verify) ----------
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -135,7 +187,25 @@ app.post("/webhook", async (req, res) => {
     if (Array.isArray(messages) && messages.length) {
       for (const msg of messages) {
         const from = msg.from;
+        
+        // --- detect origin (organic vs paid) and optional intent ---
+const intent = parseOriginAndIntent(msg);
 
+// אם הגיע מקמפיין ממומן:
+if (intent.source === "paid") {
+  // אם יש שירות מפוענח (#electricista / #plomero וכו') - דלג ישר לשלב הבא של הלקוח
+  if (intent.serviceId) {
+    await handleProfession(from, intent.serviceId);
+  } else {
+    // אין שירות מפורש - תן תפריט לקוח (שיש בו 7 השירותים)
+    await sendClientList(from);
+  }
+
+  // עדכן TTL כדי לא לירות שוב פתיחים
+  sessions.set(from, { lastWelcome: Date.now() });
+  continue;
+}
+        
         // 1) Free text -> role menu (with throttle memory)
         if (msg.type === "text") {
           const now = Date.now();
