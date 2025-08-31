@@ -23,9 +23,10 @@ const AUTH = {
   },
 };
 
-// === session memory to avoid re-sending the welcome ===
-const SESSION_TTL_MS = 15 * 60 * 1000; // 15 minutes
-const sessions = new Map(); // key: user number, value: { lastWelcome: timestamp }
+// === session memory ===
+// key: user number, value: { lastWelcome, pendingService, pendingZone }
+const SESSION_TTL_MS = 15 * 60 * 1000;
+const sessions = new Map();
 
 // --------- Senders ----------
 async function sendText(to, text) {
@@ -50,8 +51,8 @@ async function sendRoleButtons(to) {
       type: "interactive",
       interactive: {
         type: "button",
-        header: { type: "text", text: "Bienvenido a Servicio24" }, // no Markdown in header
-        body: { text: "*Selecciona tu rol:*\n" }, // bold + visual separation
+        header: { type: "text", text: "Bienvenido a Servicio24" },
+        body: { text: "*Selecciona tu rol:*\n" },
         footer: { text: "Servicio24" },
         action: {
           buttons: [
@@ -74,8 +75,8 @@ async function sendClientList(to) {
       type: "interactive",
       interactive: {
         type: "list",
-        header: { type: "text", text: "Servicios disponibles" }, // no Markdown in header
-        body: { text: "\n*Elige el profesional que necesitas:*" }, // leading newline + bold
+        header: { type: "text", text: "Servicios disponibles" },
+        body: { text: "\n*Elige el profesional que necesitas:*" },
         footer: { text: "Servicio24" },
         action: {
           button: "Elegir",
@@ -126,27 +127,87 @@ async function sendZonaGroupButtons(to) {
   );
 }
 
+// --------- Zona list (exact choice within a group) ----------
+async function sendZonaList(to, start, end) {
+  const rows = [];
+  for (let i = start; i <= end; i++) {
+    rows.push({ id: `zona_pick_${i}`, title: `Zona ${i}` });
+  }
+  const headerText = `Zonas ${start}–${end}`;
+
+  return axios.post(
+    GRAPH_URL,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "list",
+        header: { type: "text", text: headerText },
+        body:   { text: "*Elige tu zona exacta:*" },
+        footer: { text: "Servicio24" },
+        action: {
+          button: "Elegir zona",
+          sections: [
+            { title: "Zonas disponibles", rows }
+          ]
+        }
+      }
+    },
+    AUTH
+  );
+}
+
+// --------- Zona confirm (Confirmar / Cambiar / Ver otros servicios) ----------
+async function sendZonaConfirm(to, zoneNumber) {
+  return axios.post(
+    GRAPH_URL,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        header: { type: "text", text: `Zona seleccionada: ${zoneNumber}` },
+        body:   { text: "¿Desea continuar con esta zona?" },
+        footer: { text: "Servicio24" },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: `zona_confirm_${zoneNumber}`, title: "Confirmar" } },
+            { type: "reply", reply: { id: "zona_change",                title: "Cambiar zona" } },
+            { type: "reply", reply: { id: "zona_other_services",        title: "Ver otros servicios" } },
+          ],
+        },
+      },
+    },
+    AUTH
+  );
+}
+
+// --------- Service name map (shared) ----------
+const SERVICE_NAME_MAP = {
+  srv_plomero: "Plomero",
+  srv_electricista: "Electricista",
+  srv_cerrajero: "Cerrajero",
+  srv_aire: "Aire acondicionado",
+  srv_mecanico: "Mecánico",
+  srv_grua: "Servicio de grúa",
+  srv_mudanza: "Mudanza",
+};
+
 // --------- Profesiones ----------
 async function handleProfession(to, id) {
-  const map = {
-    srv_plomero: "Plomero",
-    srv_electricista: "Electricista",
-    srv_cerrajero: "Cerrajero",
-    srv_aire: "Aire acondicionado",
-    srv_mecanico: "Mecánico",
-    srv_grua: "Servicio de grúa",
-    srv_mudanza: "Mudanza",
-  };
+  const name = SERVICE_NAME_MAP[id] || "Profesional";
 
-  const name = map[id] || "Profesional";
+  // שמירת שירות שנבחר
+  const prev = sessions.get(to) || {};
+  sessions.set(to, { ...prev, pendingService: id });
 
-  // שלב 1 - אישור בחירת מקצוע
   await sendText(
     to,
     `*Perfecto*, seleccionaste: *${name}*.\n\nAhora selecciona tu zona para encontrar proveedores cercanos.`
   );
 
-  // שלב 2 - פתיחת תפריט קבוצות zonas (3 כפתורים)
   await sendZonaGroupButtons(to);
 }
 
@@ -155,9 +216,9 @@ const SERVICE_WORDS = {
   plomero: "srv_plomero",
   electricista: "srv_electricista",
   cerrajero: "srv_cerrajero",
-  aire: "srv_aire",          // "aire acondicionado"
+  aire: "srv_aire",
   mecanico: "srv_mecanico",
-  mecánico: "srv_mecanico",  // con tilde
+  mecánico: "srv_mecanico",
   grua: "srv_grua",
   grúa: "srv_grua",
   mudanza: "srv_mudanza",
@@ -166,7 +227,6 @@ const SERVICE_WORDS = {
 function parseOriginAndIntent(msg) {
   const out = { source: "organic", serviceId: null, zone: null };
 
-  // paid via referral or prefilled text
   if (msg.referral) {
     out.source = "paid";
     const pre = msg.text?.body || "";
@@ -174,7 +234,6 @@ function parseOriginAndIntent(msg) {
     return out;
   }
 
-  // organic text that may include hashtags like #plomero z7
   if (msg.type === "text") {
     const text = msg.text?.body || "";
     extractFromText(text, out);
@@ -186,7 +245,6 @@ function parseOriginAndIntent(msg) {
 function extractFromText(text, out) {
   const low = (text || "").toLowerCase();
 
-  // service
   for (const key of Object.keys(SERVICE_WORDS)) {
     if (low.includes(`#${key}`)) {
       out.serviceId = SERVICE_WORDS[key];
@@ -194,7 +252,6 @@ function extractFromText(text, out) {
     }
   }
 
-  // zona 1-25 (z7, zona 7, etc.)
   const zMatch = low.match(/\b(?:zona\s*)?z?(\d{1,2})\b/);
   if (zMatch) {
     const n = parseInt(zMatch[1], 10);
@@ -236,12 +293,35 @@ app.post("/webhook", async (req, res) => {
         const intent = parseOriginAndIntent(msg);
 
         if (intent.source === "paid") {
-          if (intent.serviceId) {
-            await handleProfession(from, intent.serviceId);
-          } else {
-            await sendClientList(from);
+          const prev = sessions.get(from) || {};
+
+          if (intent.serviceId && intent.zone) {
+            const zoneNum = parseInt(intent.zone.replace("z", ""), 10);
+            sessions.set(from, { ...prev, pendingService: intent.serviceId, pendingZone: zoneNum });
+
+            await sendText(from, `*Perfecto*, seleccionaste: *${SERVICE_NAME_MAP[intent.serviceId] || "Profesional"}*.`);
+            await sendZonaConfirm(from, zoneNum);
+            continue;
           }
-          sessions.set(from, { lastWelcome: Date.now() });
+
+          if (intent.serviceId && !intent.zone) {
+            sessions.set(from, { ...prev, pendingService: intent.serviceId });
+            await sendText(from, `*Perfecto*, seleccionaste: *${SERVICE_NAME_MAP[intent.serviceId] || "Profesional"}*.\n\nAhora selecciona tu zona para encontrar proveedores cercanos.`);
+            await sendZonaGroupButtons(from);
+            continue;
+          }
+
+          if (!intent.serviceId && intent.zone) {
+            const zoneNum = parseInt(intent.zone.replace("z", ""), 10);
+            sessions.set(from, { ...prev, pendingZone: zoneNum });
+            await sendText(from, `Zona detectada: *${zoneNum}*.\n\nElige el servicio que necesitas:`);
+            await sendClientList(from);
+            continue;
+          }
+
+          // fallback paid
+          sessions.set(from, { ...prev, lastWelcome: Date.now() });
+          await sendClientList(from);
           continue;
         }
 
@@ -252,38 +332,98 @@ app.post("/webhook", async (req, res) => {
 
           if (!session || now - session.lastWelcome > SESSION_TTL_MS) {
             await sendRoleButtons(from);
-            sessions.set(from, { lastWelcome: now });
+            sessions.set(from, { ...(session || {}), lastWelcome: now });
           }
 
           continue;
         }
 
-        // 2) Button replies (role selection)
+        // 2) Button replies (role selection, zona groups, confirm)
         const interactive = msg.interactive;
 
         if (interactive?.type === "button_reply") {
           const id = interactive.button_reply?.id;
 
+          // role selection
           if (id === "role_cliente") {
             await sendClientList(from);
-            sessions.set(from, { lastWelcome: Date.now() });
+            const prev = sessions.get(from) || {};
+            sessions.set(from, { ...prev, lastWelcome: Date.now() });
             continue;
           }
 
           if (id === "role_tecnico") {
             await sendText(from, "La función de *Técnico* está en construcción…");
+            const prev = sessions.get(from) || {};
+            sessions.set(from, { ...prev, lastWelcome: Date.now() });
+            continue;
+          }
+
+          // zona groups -> open list
+          if (id === "zona_group_1_10") {
+            await sendZonaList(from, 1, 10);
+            continue;
+          }
+          if (id === "zona_group_11_20") {
+            await sendZonaList(from, 11, 20);
+            continue;
+          }
+          if (id === "zona_group_21_25") {
+            await sendZonaList(from, 21, 25);
+            continue;
+          }
+
+          // confirm or change or other services
+          if (id === "zona_change") {
+            await sendZonaGroupButtons(from);
+            continue;
+          }
+
+          if (id === "zona_other_services") {
+            await sendClientList(from);
+            continue;
+          }
+
+          if (id.startsWith("zona_confirm_")) {
+            const zoneNumber = parseInt(id.replace("zona_confirm_", ""), 10);
+            const sess = sessions.get(from) || {};
+            const serviceId = sess.pendingService;
+            const serviceName = SERVICE_NAME_MAP[serviceId] || "Profesional";
+
+            // כאן תגיע אינטגרציית שליחת הליד לספקים הרלוונטיים
+            await sendText(
+              from,
+              `Listo. Te conectaremos con 1–3 proveedores de *${serviceName}* en *Zona ${zoneNumber}*.`
+            );
+
+            // reset pending selections
             sessions.set(from, { lastWelcome: Date.now() });
             continue;
           }
         }
 
-        // 3) List reply (profession selection)
+        // 3) List reply (profession or zona exacta)
         if (interactive?.type === "list_reply") {
           const id = interactive.list_reply?.id;
 
+          // profession selection
           if (id?.startsWith("srv_")) {
             await handleProfession(from, id);
-            sessions.set(from, { lastWelcome: Date.now() });
+            const prev = sessions.get(from) || {};
+            sessions.set(from, { ...prev, lastWelcome: Date.now() });
+            continue;
+          }
+
+          // zona exacta selection
+          if (id?.startsWith("zona_pick_")) {
+            const zoneNumber = parseInt(id.replace("zona_pick_", ""), 10);
+
+            // save pending zone
+            const prev = sessions.get(from) || {};
+            sessions.set(from, { ...prev, pendingZone: zoneNumber });
+
+            // show confirm/change/other-services buttons
+            await sendZonaConfirm(from, zoneNumber);
             continue;
           }
         }
