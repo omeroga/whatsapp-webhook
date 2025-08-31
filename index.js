@@ -14,8 +14,6 @@ const AUTH = {
   },
 };
 
-// === Intent detection (organic vs paid) ===
-function parseOriginAndIntent(msg) {
   // ברירת מחדל: אורגני
   let source = "organic";
   let serviceId = null;
@@ -222,13 +220,11 @@ app.post("/webhook", async (req, res) => {
       // fallback: אם אין serviceId, שולחים תפריט כללי
       await sendClientList(from);
     }
+    sessions.set(from, { lastWelcome: Date.now() });
     continue;
   }
 
   // אם זה אורגני -> ממשיכים עם הלוגיקה הקיימת (תפריט תפקידים וכו')
-        
-        // --- detect origin (organic vs paid) and optional intent ---
-const intent = parseOriginAndIntent(msg);
 
 // אם הגיע מקמפיין ממומן:
 if (intent.source === "paid") {
