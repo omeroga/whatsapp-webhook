@@ -14,16 +14,24 @@ const AUTH = {
   },
 };
 
-// Send plain text
+// === session memory to avoid re-sending the welcome ===
+const SESSION_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const sessions = new Map(); // key: user number, value: { lastWelcome: timestamp }
+
+// --------- Senders ----------
 async function sendText(to, text) {
   return axios.post(
     GRAPH_URL,
-    { messaging_product: "whatsapp", to, type: "text", text: { body: text } },
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body: text },
+    },
     AUTH
   );
 }
 
-// Opening buttons: Cliente / Técnico
 async function sendRoleButtons(to) {
   return axios.post(
     GRAPH_URL,
@@ -33,22 +41,21 @@ async function sendRoleButtons(to) {
       type: "interactive",
       interactive: {
         type: "button",
-        header: { type: "text", text: "Bienvenido a Servicio24" }, // ללא Markdown
-        body: { text: "*Selecciona tu rol:*\n" }, // Bold + רווח שורה מהכותרת
+        header: { type: "text", text: "Bienvenido a Servicio24" }, // no Markdown in header
+        body: { text: "*Selecciona tu rol:*\n" }, // bold + visual separation
+        footer: { text: "Servicio24" },
         action: {
           buttons: [
             { type: "reply", reply: { id: "role_cliente", title: "Cliente" } },
             { type: "reply", reply: { id: "role_tecnico", title: "Técnico" } },
           ],
         },
-        footer: { text: "Servicio24" },
       },
     },
     AUTH
   );
 }
 
-// List for Cliente: 7 מקצועות עם אימוג'ים נכונים
 async function sendClientList(to) {
   return axios.post(
     GRAPH_URL,
@@ -58,8 +65,8 @@ async function sendClientList(to) {
       type: "interactive",
       interactive: {
         type: "list",
-        header: { type: "text", text: "Servicios disponibles" }, // ללא Markdown
-        body: { text: "\n*Elige el profesional que necesitas:*" }, // רווח שורה לפני ה-body + Bold
+        header: { type: "text", text: "Servicios disponibles" }, // no Markdown in header
+        body: { text: "\n*Elige el profesional que necesitas:*" }, // leading newline + bold
         footer: { text: "Servicio24" },
         action: {
           button: "Elegir",
@@ -84,7 +91,6 @@ async function sendClientList(to) {
   );
 }
 
-// לאחר בחירת מקצוע – אישור קצר ללקוח
 async function handleProfession(to, id) {
   const map = {
     srv_plomero: "Plomero",
@@ -114,6 +120,7 @@ app.get("/webhook", (req, res) => {
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
+
   return res.sendStatus(403);
 });
 
@@ -129,14 +136,22 @@ app.post("/webhook", async (req, res) => {
       for (const msg of messages) {
         const from = msg.from;
 
-        // 1) טקסט חופשי -> תפריט תפקידים
+        // 1) Free text -> role menu (with throttle memory)
         if (msg.type === "text") {
-          await sendRoleButtons(from);
+          const now = Date.now();
+          const session = sessions.get(from);
+
+          if (!session || now - session.lastWelcome > SESSION_TTL_MS) {
+            await sendRoleButtons(from);
+            sessions.set(from, { lastWelcome: now });
+          }
+
           continue;
         }
 
-        // 2) תגובת כפתור
+        // 2) Button replies (role selection)
         const interactive = msg.interactive;
+
         if (interactive?.type === "button_reply") {
           const id = interactive.button_reply?.id;
 
@@ -151,9 +166,10 @@ app.post("/webhook", async (req, res) => {
           }
         }
 
-        // 3) תגובת רשימה (בחירת מקצוע)
+        // 3) List reply (profession selection)
         if (interactive?.type === "list_reply") {
           const id = interactive.list_reply?.id;
+
           if (id?.startsWith("srv_")) {
             await handleProfession(from, id);
             continue;
