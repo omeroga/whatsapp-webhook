@@ -40,7 +40,7 @@ function canConfirmOnce(userId, ms = 2500) {
 // ---------------- Datos LOCKED ----------------
 const CITIES = [{ id: "city_guatemala", title: "Ciudad de Guatemala" }];
 
-// טבלת ברזל לבעלי מקצוע: שם + אימוג'י, ללא שינוי סוגי האימוג'ים, רק מיקום בעת ההצגה
+// Tabla de hierro para servicios: solo cambiamos la posición visual del emoji
 const SERVICES = [
   { id: "srv_plomero",      label: "Plomero",            emoji: "🚰" },
   { id: "srv_electricista", label: "Electricista",       emoji: "⚡" },
@@ -157,7 +157,7 @@ function sendZonaGroupButtons(to) {
 function sendZonaList(to, start, end) {
   const rows = [];
   for (let z = start; z <= end; z++) {
-    const label = `Zona ${z} ${ZONA_EMOJI[z] || ""}`; // מילה ואז אימוג'י
+    const label = `Zona ${z} ${ZONA_EMOJI[z] || ""}`; // palabra y luego emoji
     rows.push({ id: `zona_${z}`, title: label });
   }
   return axios.post(GRAPH_URL, {
@@ -177,7 +177,7 @@ function sendZonaList(to, start, end) {
 // confirm zona
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
-  const headerText = `Zona seleccionada: ${z} ${emoji}`; // ללא "(bloqueada)"
+  const headerText = `Zona seleccionada: ${z} ${emoji}`;
 
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
@@ -198,7 +198,7 @@ function sendZonaConfirm(to, z) {
   }, AUTH);
 }
 
-// services list — מציגים "שם + אימוג'י" (האימוג'י בצד ימין)
+// services list — mostramos "nombre + emoji" (emoji a la derecha)
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   const consent = "_Al continuar, aceptas recibir llamadas y mensajes de profesionales. Sin costo._";
@@ -218,7 +218,7 @@ function sendServicesList(to, cityTitle, z) {
             title: "Profesionales",
             rows: SERVICES.map(s => ({
               id: s.id,
-              title: `${s.label} ${s.emoji}` // מילה ואז אימוג'י
+              title: `${s.label} ${s.emoji}` // palabra y luego emoji
             }))
           }
         ]
@@ -227,7 +227,7 @@ function sendServicesList(to, cityTitle, z) {
   }, AUTH);
 }
 
-// final lead — מציגים "שם + אימוג'י"
+// final lead — mostramos "nombre + emoji"
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const serviceObj = SERVICES.find(s => s.id === serviceId);
   const serviceText = serviceObj ? `${serviceObj.label} ${serviceObj.emoji}` : "Profesional 👤";
@@ -338,7 +338,8 @@ app.post("/webhook", async (req, res) => {
             s.zoneConfirmed = true;
             const cityTitle = s.city?.title || "Ciudad de Guatemala";
             console.log("zone_confirmed", { from, zone: s.zone });
-            await sendServicesList(from, cityTitle, s.zone); // ממשיך לשירותים
+            // Siempre avanzar a servicios después de confirmar zona
+            await sendServicesList(from, cityTitle, s.zone);
             continue;
           }
         }
