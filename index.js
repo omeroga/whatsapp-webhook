@@ -150,7 +150,7 @@ function sendZonaConfirm(to, z) {
     interactive: {
       type: "button",
       header: { type: "text", text: `Zona seleccionada: ${z} ${emoji}` },
-      body:   { text: "¿Desea continuar con esta zona?\n\n_Al continuar, aceptas recibir llamadas y mensajes de profesionales. Sin costo._" },
+      body:   { text: "¿Desea continuar con esta zona?" },
       footer: { text: "Servicio24" },
       action: {
         buttons: [
@@ -162,7 +162,7 @@ function sendZonaConfirm(to, z) {
   }, AUTH);
 }
 
-// services list (after zona confirmed)
+// services list (after zona confirmed) — footer includes consent + brand
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   return axios.post(GRAPH_URL, {
@@ -173,7 +173,7 @@ function sendServicesList(to, cityTitle, z) {
       type: "list",
       header: { type: "text", text: "Servicios disponibles" },
       body:   { text: `Elige el profesional que necesitas:\n${cityTitle} • Zona ${z} ${zEmoji}` },
-      footer: { text: "Servicio24" },
+      footer: { text: "Servicio24 • Al continuar, aceptas recibir llamadas y mensajes de proveedores. Sin costo." },
       action: {
         button: "Elegir servicio",
         sections: [
@@ -195,7 +195,7 @@ function sendServicesList(to, cityTitle, z) {
   }, AUTH);
 }
 
-// final lead message
+// final lead message — without supplier count
 function sendLeadReady(to, cityTitle, zone, serviceId) {
   const service = SERVICE_LABEL[serviceId] || "Profesional";
   const emoji = ZONA_EMOJI[zone] || "";
@@ -261,7 +261,7 @@ app.post("/webhook", async (req, res) => {
             }
           }
 
-          // service chosen
+          // service chosen — finalize only if zone is confirmed
           if (SERVICE_LABEL[id]) {
             s.serviceId = id;
 
@@ -280,13 +280,16 @@ app.post("/webhook", async (req, res) => {
         if (interactive?.type === "button_reply") {
           const id = interactive.button_reply?.id;
 
+          // roles
           if (id === "role_cliente") { await sendCityMenu(from); continue; }
           if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción…"); continue; }
 
+          // zona groups -> open the exact list
           if (id === "zona_group_1_10")  { await sendZonaList(from, 1, 10);  continue; }
           if (id === "zona_group_11_20") { await sendZonaList(from, 11, 20); continue; }
           if (id === "zona_group_21_25") { await sendZonaList(from, 21, 25); continue; }
 
+          // confirm / change zona
           if (id === "zona_change") { await sendZonaGroupButtons(from); continue; }
           if (id === "zona_confirm") {
             if (!s.zone) { await sendZonaGroupButtons(from); continue; }
@@ -297,6 +300,7 @@ app.post("/webhook", async (req, res) => {
           }
         }
 
+        // fallback: if no city yet, start at city menu
         if (!s.city) {
           await sendCityMenu(from);
           continue;
@@ -314,3 +318,4 @@ app.post("/webhook", async (req, res) => {
 // --------- Server ----------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+```0
