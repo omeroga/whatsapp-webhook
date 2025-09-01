@@ -1,5 +1,5 @@
 // index.js
-// === Servicio24: V1 BRONZE (LOCKED) ===
+// === Servicio24: V2 (Client Enhancements, basado en V1 BRONZE LOCKED) ===
 // Servicios oficiales (NO CAMBIAR):
 // 🚰 Plomero | ⚡ Electricista | 🔑 Cerrajero | ❄️ Aire acondicionado | 🛠️ Mecánico | 🛻 Servicio de grúa | 🚚 Mudanza
 // Zonas 1-25 (LOCKED):
@@ -52,6 +52,28 @@ function sendText(to, text) {
   }, AUTH);
 }
 
+// pantalla inicial: confirmación
+function sendStartConfirm(to) {
+  return axios.post(GRAPH_URL, {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      header: { type: "text", text: "Servicio24" },
+      body:   { text: "¿Deseas iniciar tu solicitud?" },
+      footer: { text: "Servicio24" },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: "start_yes", title: "Confirmar" } },
+          { type: "reply", reply: { id: "start_no",  title: "Cancelar" } },
+        ],
+      },
+    },
+  }, AUTH);
+}
+
+// role (Cliente/Técnico)
 function sendRoleButtons(to) {
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
@@ -72,6 +94,7 @@ function sendRoleButtons(to) {
   }, AUTH);
 }
 
+// city list
 function sendCityMenu(to) {
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
@@ -83,7 +106,7 @@ function sendCityMenu(to) {
       body:   { text: "Elige la ciudad donde necesitas el servicio:" },
       footer: { text: "Servicio24" },
       action: {
-        button: "Elegir ciudad",
+        button: "Seleccionar ciudad",
         sections: [
           { title: "Ciudades", rows: CITIES.map(c => ({ id: c.id, title: c.title })) }
         ]
@@ -92,6 +115,7 @@ function sendCityMenu(to) {
   }, AUTH);
 }
 
+// zona groups
 function sendZonaGroupButtons(to) {
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
@@ -100,7 +124,7 @@ function sendZonaGroupButtons(to) {
     interactive: {
       type: "button",
       header: { type: "text", text: "Zonas" },
-      body:   { text: "Elige tu zona exacta:" },
+      body:   { text: "Selecciona tu zona:" },
       footer: { text: "Servicio24" },
       action: {
         buttons: [
@@ -113,6 +137,7 @@ function sendZonaGroupButtons(to) {
   }, AUTH);
 }
 
+// zona list exacta
 function sendZonaList(to, start, end) {
   const rows = [];
   for (let z = start; z <= end; z++) {
@@ -125,13 +150,14 @@ function sendZonaList(to, start, end) {
     interactive: {
       type: "list",
       header: { type: "text", text: `Zonas ${start}-${end}` },
-      body:   { text: "Elige tu zona exacta:" },
+      body:   { text: "Selecciona tu zona exacta:" },
       footer: { text: "Servicio24" },
-      action: { button: "Elegir zona", sections: [{ title: "Zonas", rows }] }
+      action: { button: "Seleccionar zona", sections: [{ title: "Zonas", rows }] }
     }
   }, AUTH);
 }
 
+// confirm zona
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
   return axios.post(GRAPH_URL, {
@@ -153,6 +179,7 @@ function sendZonaConfirm(to, z) {
   }, AUTH);
 }
 
+// services list (consent only here)
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   const consent = "_Al continuar, aceptas recibir llamadas y mensajes de profesionales. Sin costo._";
@@ -163,10 +190,10 @@ function sendServicesList(to, cityTitle, z) {
     interactive: {
       type: "list",
       header: { type: "text", text: "Servicios disponibles" },
-      body:   { text: `Elige el profesional que necesitas:\n${cityTitle} • Zona ${z} ${zEmoji}\n\n${consent}` },
+      body:   { text: `Selecciona el profesional que necesitas:\n${cityTitle} • Zona ${z} ${zEmoji}\n\n${consent}` },
       footer: { text: "Servicio24" },
       action: {
-        button: "Elegir servicio",
+        button: "Seleccionar servicio",
         sections: [
           {
             title: "Profesionales",
@@ -186,6 +213,7 @@ function sendServicesList(to, cityTitle, z) {
   }, AUTH);
 }
 
+// final lead
 function sendLeadReady(to, cityTitle, zone, serviceId) {
   const service = SERVICE_LABEL[serviceId] || "Profesional";
   const emoji = ZONA_EMOJI[zone] || "";
@@ -206,10 +234,11 @@ app.post("/webhook", async (req, res) => {
     if (Array.isArray(messages) && messages.length) {
       for (const msg of messages) {
         const from = msg.from;
-        const s = sessions.get(from) || { city: null, zone: null, zoneConfirmed: false, serviceId: null, lastWelcome: 0 };
+        const s = sessions.get(from) || { city: null, zone: null, zoneConfirmed: false, serviceId: null, lastWelcome: 0, started: false };
         sessions.set(from, s);
 
         if (msg.type === "text") {
+          if (!s.started) { await sendStartConfirm(from); continue; }
           const now = Date.now();
           if (!s.lastWelcome || now - s.lastWelcome > SESSION_TTL_MS) {
             await sendRoleButtons(from);
@@ -253,6 +282,9 @@ app.post("/webhook", async (req, res) => {
 
         if (interactive?.type === "button_reply") {
           const id = interactive.button_reply?.id;
+
+          if (id === "start_yes") { s.started = true; await sendRoleButtons(from); continue; }
+          if (id === "start_no")  { await sendText(from, "Operación cancelada.\n\nServicio24"); continue; }
 
           if (id === "role_cliente") { await sendCityMenu(from); continue; }
           if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción…\n\nServicio24"); continue; }
