@@ -150,7 +150,7 @@ function sendZonaConfirm(to, z) {
     interactive: {
       type: "button",
       header: { type: "text", text: `Zona seleccionada: ${z} ${emoji}` },
-      body:   { text: "¿Desea continuar con esta zona?\n\n_Al continuar, aceptas recibir llamadas y mensajes de proveedores. Sin costo._" },
+      body:   { text: "¿Desea continuar con esta zona?\n\n_Al continuar, aceptas recibir llamadas y mensajes de profesionales. Sin costo._" },
       footer: { text: "Servicio24" },
       action: {
         buttons: [
@@ -199,7 +199,7 @@ function sendServicesList(to, cityTitle, z) {
 function sendLeadReady(to, cityTitle, zone, serviceId) {
   const service = SERVICE_LABEL[serviceId] || "Profesional";
   const emoji = ZONA_EMOJI[zone] || "";
-  const text = `Listo ✅  ${service} • Zona ${zone} ${emoji} • ${cityTitle}.\nEn breve te contactarán 1-3 proveedores cercanos.`;
+  const text = `Listo ✅  ${service} • Zona ${zone} ${emoji} • ${cityTitle}.\nEn breve te contactarán profesionales cercanos.`;
   return sendText(to, text);
 }
 
@@ -261,7 +261,7 @@ app.post("/webhook", async (req, res) => {
             }
           }
 
-          // service chosen  *** FIXED to avoid loop ***
+          // service chosen
           if (SERVICE_LABEL[id]) {
             s.serviceId = id;
 
@@ -271,7 +271,6 @@ app.post("/webhook", async (req, res) => {
               continue;
             }
 
-            // if zone not confirmed yet, guide back to zones
             await sendZonaGroupButtons(from);
             continue;
           }
@@ -281,16 +280,13 @@ app.post("/webhook", async (req, res) => {
         if (interactive?.type === "button_reply") {
           const id = interactive.button_reply?.id;
 
-          // roles
           if (id === "role_cliente") { await sendCityMenu(from); continue; }
           if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción…"); continue; }
 
-          // zona groups -> open the exact list
           if (id === "zona_group_1_10")  { await sendZonaList(from, 1, 10);  continue; }
           if (id === "zona_group_11_20") { await sendZonaList(from, 11, 20); continue; }
           if (id === "zona_group_21_25") { await sendZonaList(from, 21, 25); continue; }
 
-          // confirm / change zona
           if (id === "zona_change") { await sendZonaGroupButtons(from); continue; }
           if (id === "zona_confirm") {
             if (!s.zone) { await sendZonaGroupButtons(from); continue; }
@@ -301,7 +297,6 @@ app.post("/webhook", async (req, res) => {
           }
         }
 
-        // fallback: if no city yet, start at city menu
         if (!s.city) {
           await sendCityMenu(from);
           continue;
