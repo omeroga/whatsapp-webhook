@@ -2,8 +2,8 @@
 // === Servicio24: emojis oficiales (NO CAMBIAR sin instrucción) ===
 // Servicios:
 // 🚰 Plomero | ⚡ Electricista | 🔑 Cerrajero | ❄️ Aire acondicionado | 🛠️ Mecánico | 🛻 Servicio de grúa | 🚚 Mudanza
-// Zonas 1-25:
-// 1 🏛️ | 2 🍺 | 3 🕊️ | 4 💰 | 5 🏟️ | 6 🏘️ | 7 🌳 | 8 🚌 | 9 🏨 | 10 🎉 |
+// Zonas 1-25 (LOCKED):
+// 1 🏛️ | 2 🍺 | 3 🕊️ | 4 💰 | 5 🏟️ | 6 🏘️ | 7 🏺 | 8 🚌 | 9 🏨 | 10 🎉 |
 // 11 🛒 | 12 🧰 | 13 ✈️ | 14 🏢 | 15 🎓 | 16 🏰 | 17 🏭 | 18 🛣️ | 19 🔧 | 20 🏚️ |
 // 21 🚧 | 22 📦 | 23 🚋 | 24 🏗️ | 25 🌳
 
@@ -39,12 +39,17 @@ const SERVICE_LABEL = {
   srv_mudanza: "Mudanza",
 };
 
-// ---- Zona emojis (locked) ----
+// ---- Zona emojis (LOCKED baseline) ----
 const ZONA_EMOJI = {
-  1:"🏛️",2:"🍺",3:"🕊️",4:"💰",5:"🏟️",6:"🏘️",7:"🌳",8:"🚌",9:"🏨",10:"🎉",
+  1:"🏛️",2:"🍺",3:"🕊️",4:"💰",5:"🏟️",6:"🏘️",7:"🏺",8:"🚌",9:"🏨",10:"🎉",
   11:"🛒",12:"🧰",13:"✈️",14:"🏢",15:"🎓",16:"🏰",17:"🏭",18:"🛣️",19:"🔧",20:"🏚️",
   21:"🚧",22:"📦",23:"🚋",24:"🏗️",25:"🌳"
 };
+
+// --------- Small helpers ----------
+const norm = (t="") => t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu,"").trim();
+const isConfirmText = (t) => /^(confirmar|ok|si|sí|dale|continuar)$/i.test(norm(t));
+const isChangeText  = (t) => /^(cambiar|cambio|otra|volver)$/i.test(norm(t));
 
 // --------- Senders ----------
 function sendText(to, text) {
@@ -56,7 +61,6 @@ function sendText(to, text) {
   }, AUTH);
 }
 
-// role (Cliente/Técnico)
 function sendRoleButtons(to) {
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
@@ -77,7 +81,6 @@ function sendRoleButtons(to) {
   }, AUTH);
 }
 
-// city list
 function sendCityMenu(to) {
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
@@ -98,7 +101,6 @@ function sendCityMenu(to) {
   }, AUTH);
 }
 
-// zona groups 1-10 / 11-20 / 21-25
 function sendZonaGroupButtons(to) {
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
@@ -120,7 +122,6 @@ function sendZonaGroupButtons(to) {
   }, AUTH);
 }
 
-// exact zona list
 function sendZonaList(to, start, end) {
   const rows = [];
   for (let z = start; z <= end; z++) {
@@ -140,7 +141,6 @@ function sendZonaList(to, start, end) {
   }, AUTH);
 }
 
-// confirm zona
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
   return axios.post(GRAPH_URL, {
@@ -162,7 +162,6 @@ function sendZonaConfirm(to, z) {
   }, AUTH);
 }
 
-// services list (after zona confirmed) — footer includes consent + brand
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   return axios.post(GRAPH_URL, {
@@ -195,7 +194,6 @@ function sendServicesList(to, cityTitle, z) {
   }, AUTH);
 }
 
-// final lead message — without supplier count
 function sendLeadReady(to, cityTitle, zone, serviceId) {
   const service = SERVICE_LABEL[serviceId] || "Profesional";
   const emoji = ZONA_EMOJI[zone] || "";
@@ -227,8 +225,20 @@ app.post("/webhook", async (req, res) => {
         const s = sessions.get(from) || { city: null, zone: null, zoneConfirmed: false, serviceId: null, lastWelcome: 0 };
         sessions.set(from, s);
 
-        // free text -> role menu (throttled)
+        // TEXT fallbacks (confirm/change zone)
         if (msg.type === "text") {
+          const t = msg.text?.body || "";
+          if (s.zone && !s.zoneConfirmed && isConfirmText(t)) {
+            s.zoneConfirmed = true;
+            const cityTitle = s.city?.title || "Ciudad de Guatemala";
+            await sendServicesList(from, cityTitle, s.zone);
+            continue;
+          }
+          if (s.zone && !s.zoneConfirmed && isChangeText(t)) {
+            await sendZonaGroupButtons(from);
+            continue;
+          }
+
           const now = Date.now();
           if (!s.lastWelcome || now - s.lastWelcome > SESSION_TTL_MS) {
             await sendRoleButtons(from);
@@ -239,11 +249,9 @@ app.post("/webhook", async (req, res) => {
 
         const interactive = msg.interactive;
 
-        // list replies
         if (interactive?.type === "list_reply") {
           const id = interactive.list_reply?.id;
 
-          // city chosen
           if (CITIES.some(c => c.id === id)) {
             const city = CITIES.find(c => c.id === id);
             s.city = city; s.zone = null; s.zoneConfirmed = false; s.serviceId = null;
@@ -251,7 +259,6 @@ app.post("/webhook", async (req, res) => {
             continue;
           }
 
-          // exact zona chosen
           if (id?.startsWith("zona_")) {
             const z = parseInt(id.split("_")[1], 10);
             if (z >= 1 && z <= 25) {
@@ -261,35 +268,28 @@ app.post("/webhook", async (req, res) => {
             }
           }
 
-          // service chosen — finalize only if zone is confirmed
           if (SERVICE_LABEL[id]) {
             s.serviceId = id;
-
             if (s.zoneConfirmed) {
               const cityTitle = s.city?.title || "Ciudad de Guatemala";
               await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
               continue;
             }
-
             await sendZonaGroupButtons(from);
             continue;
           }
         }
 
-        // button replies
         if (interactive?.type === "button_reply") {
           const id = interactive.button_reply?.id;
 
-          // roles
           if (id === "role_cliente") { await sendCityMenu(from); continue; }
           if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción…"); continue; }
 
-          // zona groups -> open the exact list
           if (id === "zona_group_1_10")  { await sendZonaList(from, 1, 10);  continue; }
           if (id === "zona_group_11_20") { await sendZonaList(from, 11, 20); continue; }
           if (id === "zona_group_21_25") { await sendZonaList(from, 21, 25); continue; }
 
-          // confirm / change zona
           if (id === "zona_change") { await sendZonaGroupButtons(from); continue; }
           if (id === "zona_confirm") {
             if (!s.zone) { await sendZonaGroupButtons(from); continue; }
@@ -300,7 +300,6 @@ app.post("/webhook", async (req, res) => {
           }
         }
 
-        // fallback: if no city yet, start at city menu
         if (!s.city) {
           await sendCityMenu(from);
           continue;
