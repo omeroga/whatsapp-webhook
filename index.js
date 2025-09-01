@@ -1,6 +1,6 @@
 // index.js
-// === Servicio24: V2 (Client Enhancements, basado en V1 BRONZE LOCKED) ===
-// Servicios oficiales (NO CAMBIAR):
+// === Servicio24: V2 (Cliente, cleaned & tightened sobre V1 BRONZE LOCKED) ===
+// Servicios oficiales (LOCKED):
 // 🚰 Plomero | ⚡ Electricista | 🔑 Cerrajero | ❄️ Aire acondicionado | 🛠️ Mecánico | 🛻 Servicio de grúa | 🚚 Mudanza
 // Zonas 1-25 (LOCKED):
 // 1 🏛️ | 2 🍺 | 3 🕊️ | 4 💰 | 5 🏟️ | 6 🏘️ | 7 🏺 | 8 🚌 | 9 🏨 | 10 🎉 |
@@ -13,6 +13,7 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
+// ---------------- Config ----------------
 const GRAPH_URL = `https://graph.facebook.com/v${process.env.GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
 const AUTH = {
   headers: {
@@ -21,34 +22,69 @@ const AUTH = {
   },
 };
 
+// Sesiones en memoria (nota: para producción considera Redis/DB)
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const sessions = new Map();
 
+// Anti double tap en Confirmar
+const lastConfirmByUser = new Map();
+function canConfirmOnce(userId, ms = 2500) {
+  const now = Date.now();
+  const last = lastConfirmByUser.get(userId) ?? 0;
+  if (now - last < ms) return false;
+  lastConfirmByUser.set(userId, now);
+  return true;
+}
+
+// ---------------- Datos LOCKED ----------------
 const CITIES = [{ id: "city_guatemala", title: "Ciudad de Guatemala" }];
 
-const SERVICE_LABEL = {
-  srv_plomero: "Plomero",
-  srv_electricista: "Electricista",
-  srv_cerrajero: "Cerrajero",
-  srv_aire: "Aire acondicionado",
-  srv_mecanico: "Mecánico",
-  srv_grua: "Servicio de grúa",
-  srv_mudanza: "Mudanza",
-};
+const SERVICES = [
+  { id: "srv_plomero",      title: "🚰  Plomero",      label: "Plomero" },
+  { id: "srv_electricista", title: "⚡  Electricista",  label: "Electricista" },
+  { id: "srv_cerrajero",    title: "🔑  Cerrajero",    label: "Cerrajero" },
+  { id: "srv_aire",         title: "❄️  Aire acondicionado", label: "Aire acondicionado" },
+  { id: "srv_mecanico",     title: "🛠️  Mecánico",     label: "Mecánico" },
+  { id: "srv_grua",         title: "🛻  Servicio de grúa", label: "Servicio de grúa" },
+  { id: "srv_mudanza",      title: "🚚  Mudanza",      label: "Mudanza" },
+];
+// Fuente única de verdad para labels
+const SERVICE_LABEL = Object.fromEntries(SERVICES.map(s => [s.id, s.label]));
 
+const SPECIAL_ZONA = 7; // LOCKED
 const ZONA_EMOJI = {
   1:"🏛️",2:"🍺",3:"🕊️",4:"💰",5:"🏟️",6:"🏘️",7:"🏺",8:"🚌",9:"🏨",10:"🎉",
   11:"🛒",12:"🧰",13:"✈️",14:"🏢",15:"🎓",16:"🏰",17:"🏭",18:"🛣️",19:"🔧",20:"🏚️",
   21:"🚧",22:"📦",23:"🚋",24:"🏗️",25:"🌳"
 };
 
-// --------- Senders ----------
+// ---------------- Helpers de envío ----------------
 function sendText(to, text) {
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
     to,
     type: "text",
     text: { body: text },
+  }, AUTH);
+}
+
+function sendMenuPrincipal(to, bodyText = "¿Qué deseas hacer ahora?") {
+  return axios.post(GRAPH_URL, {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      header: { type: "text", text: "Servicio24" },
+      body:   { text: bodyText },
+      footer: { text: "Servicio24" },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: "menu_main", title: "Menú Principal" } },
+          { type: "reply", reply: { id: "menu_cancel", title: "Cancelar" } },
+        ],
+      },
+    },
   }, AUTH);
 }
 
@@ -82,7 +118,7 @@ function sendRoleButtons(to) {
     interactive: {
       type: "button",
       header: { type: "text", text: "Bienvenido a Servicio24" },
-      body:   { text: "*Selecciona tu rol:*\n" },
+      body:   { text: "*Selecciona tu rol:*" },
       footer: { text: "Servicio24" },
       action: {
         buttons: [
@@ -141,7 +177,8 @@ function sendZonaGroupButtons(to) {
 function sendZonaList(to, start, end) {
   const rows = [];
   for (let z = start; z <= end; z++) {
-    rows.push({ id: `zona_${z}`, title: `${ZONA_EMOJI[z]}  Zona ${z}` });
+    const label = z === SPECIAL_ZONA ? `Zona ${z} ${ZONA_EMOJI[z]}` : `Zona ${z} ${ZONA_EMOJI[z]}`;
+    rows.push({ id: `zona_${z}`, title: label });
   }
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
@@ -160,13 +197,17 @@ function sendZonaList(to, start, end) {
 // confirm zona
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
+  const headerText = z === SPECIAL_ZONA
+    ? `Zona seleccionada: ${z} ${emoji} (bloqueada)`
+    : `Zona seleccionada: ${z} ${emoji}`;
+
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
     to,
     type: "interactive",
     interactive: {
       type: "button",
-      header: { type: "text", text: `Zona seleccionada: ${z} ${emoji}` },
+      header: { type: "text", text: headerText },
       body:   { text: "¿Desea continuar con esta zona?" },
       footer: { text: "Servicio24" },
       action: {
@@ -179,7 +220,7 @@ function sendZonaConfirm(to, z) {
   }, AUTH);
 }
 
-// services list (consent only here)
+// services list (incluye consentimiento)
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   const consent = "_Al continuar, aceptas recibir llamadas y mensajes de profesionales. Sin costo._";
@@ -197,15 +238,7 @@ function sendServicesList(to, cityTitle, z) {
         sections: [
           {
             title: "Profesionales",
-            rows: [
-              { id: "srv_plomero",      title: "🚰  Plomero" },
-              { id: "srv_electricista", title: "⚡  Electricista" },
-              { id: "srv_cerrajero",    title: "🔑  Cerrajero" },
-              { id: "srv_aire",         title: "❄️  Aire acondicionado" },
-              { id: "srv_mecanico",     title: "🛠️  Mecánico" },
-              { id: "srv_grua",         title: "🛻  Servicio de grúa" },
-              { id: "srv_mudanza",      title: "🚚  Mudanza" },
-            ]
+            rows: SERVICES.map(s => ({ id: s.id, title: s.title }))
           }
         ]
       }
@@ -214,16 +247,18 @@ function sendServicesList(to, cityTitle, z) {
 }
 
 // final lead
-function sendLeadReady(to, cityTitle, zone, serviceId) {
+async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const service = SERVICE_LABEL[serviceId] || "Profesional";
   const emoji = ZONA_EMOJI[zone] || "";
   const text =
     `Listo ✅  ${service} • Zona ${zone} ${emoji} • ${cityTitle}.\n` +
-    `En breve te contactarán profesionales cercanos.`;
-  return sendText(to, text + "\n\nServicio24");
+    `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+  await sendText(to, text);
+  // Dar salida clara al usuario
+  await sendMenuPrincipal(to, "Tu solicitud fue enviada. ¿Deseas volver al menú?");
 }
 
-// --------- Webhook ----------
+// ---------------- Webhook ----------------
 app.post("/webhook", async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
@@ -234,9 +269,19 @@ app.post("/webhook", async (req, res) => {
     if (Array.isArray(messages) && messages.length) {
       for (const msg of messages) {
         const from = msg.from;
-        const s = sessions.get(from) || { city: null, zone: null, zoneConfirmed: false, serviceId: null, lastWelcome: 0, started: false };
+
+        // Restaurar o crear sesión
+        const s = sessions.get(from) || {
+          city: null,
+          zone: null,
+          zoneConfirmed: false,
+          serviceId: null,
+          lastWelcome: 0,
+          started: false
+        };
         sessions.set(from, s);
 
+        // Mensaje de texto libre
         if (msg.type === "text") {
           if (!s.started) { await sendStartConfirm(from); continue; }
           const now = Date.now();
@@ -249,60 +294,89 @@ app.post("/webhook", async (req, res) => {
 
         const interactive = msg.interactive;
 
+        // Respuestas de listas
         if (interactive?.type === "list_reply") {
           const id = interactive.list_reply?.id;
 
+          // Ciudad
           if (CITIES.some(c => c.id === id)) {
             const city = CITIES.find(c => c.id === id);
             s.city = city; s.zone = null; s.zoneConfirmed = false; s.serviceId = null;
+            console.log("city_selected", { from, city: city.title });
             await sendZonaGroupButtons(from);
             continue;
           }
 
+          // Zona exacta
           if (id?.startsWith("zona_")) {
             const z = parseInt(id.split("_")[1], 10);
             if (z >= 1 && z <= 25) {
               s.zone = z; s.zoneConfirmed = false;
+              console.log("zone_selected", { from, zone: z });
               await sendZonaConfirm(from, z);
               continue;
             }
           }
 
+          // Servicio
           if (SERVICE_LABEL[id]) {
-            s.serviceId = id;
-            if (s.zoneConfirmed) {
-              const cityTitle = s.city?.title || "Ciudad de Guatemala";
-              await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
-            } else {
+            // Si el usuario eligió servicio antes de confirmar zona
+            if (!s.zoneConfirmed) {
+              await sendText(from, "Primero selecciona y confirma tu zona para continuar.");
               await sendZonaGroupButtons(from);
+              continue;
             }
+            s.serviceId = id;
+            const cityTitle = s.city?.title || "Ciudad de Guatemala";
+            console.log("service_selected", { from, serviceId: id });
+            await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
             continue;
           }
         }
 
+        // Respuestas de botones
         if (interactive?.type === "button_reply") {
           const id = interactive.button_reply?.id;
 
+          // Inicio
           if (id === "start_yes") { s.started = true; await sendRoleButtons(from); continue; }
           if (id === "start_no")  { await sendText(from, "Operación cancelada.\n\nServicio24"); continue; }
 
-          if (id === "role_cliente") { await sendCityMenu(from); continue; }
-          if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción…\n\nServicio24"); continue; }
+          // Menú y cancelar disponibles en cualquier punto
+          if (id === "menu_main") { 
+            s.city = null; s.zone = null; s.zoneConfirmed = false; s.serviceId = null;
+            await sendRoleButtons(from);
+            continue; 
+          }
+          if (id === "menu_cancel") { 
+            await sendText(from, "Operación cancelada.\n\nServicio24"); 
+            continue; 
+          }
 
+          // Rol
+          if (id === "role_cliente") { await sendCityMenu(from); continue; }
+          if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción...\n\nServicio24"); continue; }
+
+          // Grupos de zona
           if (id === "zona_group_1_10")  { await sendZonaList(from, 1, 10);  continue; }
           if (id === "zona_group_11_20") { await sendZonaList(from, 11, 20); continue; }
           if (id === "zona_group_21_25") { await sendZonaList(from, 21, 25); continue; }
 
+          // Cambio o confirmación de zona
           if (id === "zona_change") { await sendZonaGroupButtons(from); continue; }
           if (id === "zona_confirm") {
             if (!s.zone) { await sendZonaGroupButtons(from); continue; }
+            // Debounce para evitar doble confirm
+            if (!canConfirmOnce(from)) { continue; }
             s.zoneConfirmed = true;
             const cityTitle = s.city?.title || "Ciudad de Guatemala";
+            console.log("zone_confirmed", { from, zone: s.zone });
             await sendServicesList(from, cityTitle, s.zone);
             continue;
           }
         }
 
+        // Fallback por si no hay ciudad aún
         if (!s.city) {
           await sendCityMenu(from);
           continue;
@@ -317,6 +391,6 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// --------- Server ----------
+// ---------------- Server ----------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
