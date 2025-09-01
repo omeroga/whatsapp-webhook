@@ -134,7 +134,7 @@ function sendZonaList(to, start, end) {
   }, AUTH);
 }
 
-// confirm zona (NO consent text here)
+// confirm zona (no consent here)
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
   return axios.post(GRAPH_URL, {
@@ -155,7 +155,7 @@ function sendZonaConfirm(to, z) {
   }, AUTH);
 }
 
-// services list (after zona confirmed) — with consent in footer
+// services list (after zona confirmed) — consent in short footer (≤60 chars)
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   return axios.post(GRAPH_URL, {
@@ -165,7 +165,7 @@ function sendServicesList(to, cityTitle, z) {
       type: "list",
       header: { type: "text", text: "Servicios disponibles" },
       body:   { text: `Elige el profesional que necesitas:\n${cityTitle} • Zona ${z} ${zEmoji}` },
-      footer: { text: "Servicio24 · Al continuar, aceptas recibir llamadas y mensajes de profesionales. Sin costo." },
+      footer: { text: "Servicio24 · Aceptas llamadas y mensajes. Sin costo." },
       action: {
         button: "Elegir servicio",
         sections: [
@@ -219,11 +219,11 @@ app.post("/webhook", async (req, res) => {
         const s = sessions.get(from) || { city: null, zone: null, zoneConfirmed: false, serviceId: null, awaiting: null, lastWelcome: 0 };
         sessions.set(from, s);
 
-        // --- TEXT FALLBACKS (prevents “stuck” state) ---
+        // --- TEXT FALLBACKS ---
         if (msg.type === "text") {
           const txt = (msg.text?.body || "").trim().toLowerCase();
 
-          // if expecting zone confirm
+          // awaiting zone confirm
           if (s.awaiting === "zona_confirm") {
             if (txt === "confirmar" || txt === "confirmar ✅") {
               s.zoneConfirmed = true; s.awaiting = null;
@@ -236,7 +236,6 @@ app.post("/webhook", async (req, res) => {
               await sendZonaGroupButtons(from);
               continue;
             }
-            // number 1–25 typed -> set zone and re-confirm
             const n = parseInt(txt, 10);
             if (!isNaN(n) && n >= 1 && n <= 25) {
               s.zone = n; s.zoneConfirmed = false; s.awaiting = "zona_confirm";
@@ -245,7 +244,7 @@ app.post("/webhook", async (req, res) => {
             }
           }
 
-          // idle free-text -> show role (throttled)
+          // idle -> role
           const now = Date.now();
           if (!s.lastWelcome || now - s.lastWelcome > SESSION_TTL_MS) {
             await sendRoleButtons(from);
@@ -278,7 +277,7 @@ app.post("/webhook", async (req, res) => {
             }
           }
 
-          // service chosen (after zone confirmed)
+          // service chosen
           if (SERVICE_LABEL[id]) {
             s.serviceId = id;
             if (s.zoneConfirmed) {
@@ -299,7 +298,7 @@ app.post("/webhook", async (req, res) => {
           if (id === "role_cliente") { await sendCityMenu(from); continue; }
           if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción…"); continue; }
 
-          // zona groups -> open the exact list
+          // zona groups
           if (id === "zona_group_1_10")  { await sendZonaList(from, 1, 10);  continue; }
           if (id === "zona_group_11_20") { await sendZonaList(from, 11, 20); continue; }
           if (id === "zona_group_21_25") { await sendZonaList(from, 21, 25); continue; }
