@@ -1,5 +1,5 @@
 // index.js
-// === Servicio24: V2 (Cliente, cleaned & tightened sobre V1 BRONZE LOCKED) ===
+// === Servicio24: V2 (Cliente, cleaned sobre V1 BRONZE LOCKED) ===
 // Servicios oficiales (LOCKED):
 // 🚰 Plomero | ⚡ Electricista | 🔑 Cerrajero | ❄️ Aire acondicionado | 🛠️ Mecánico | 🛻 Servicio de grúa | 🚚 Mudanza
 // Zonas 1-25 (LOCKED):
@@ -22,7 +22,7 @@ const AUTH = {
   },
 };
 
-// Sesiones en memoria (nota: para producción considera Redis/DB)
+// Sesiones en memoria
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const sessions = new Map();
 
@@ -48,7 +48,6 @@ const SERVICES = [
   { id: "srv_grua",         title: "🛻  Servicio de grúa", label: "Servicio de grúa" },
   { id: "srv_mudanza",      title: "🚚  Mudanza",      label: "Mudanza" },
 ];
-// Fuente única de verdad para labels
 const SERVICE_LABEL = Object.fromEntries(SERVICES.map(s => [s.id, s.label]));
 
 const SPECIAL_ZONA = 7; // LOCKED
@@ -65,26 +64,6 @@ function sendText(to, text) {
     to,
     type: "text",
     text: { body: text },
-  }, AUTH);
-}
-
-function sendMenuPrincipal(to, bodyText = "¿Qué deseas hacer ahora?") {
-  return axios.post(GRAPH_URL, {
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
-      header: { type: "text", text: "Servicio24" },
-      body:   { text: bodyText },
-      footer: { text: "Servicio24" },
-      action: {
-        buttons: [
-          { type: "reply", reply: { id: "menu_main", title: "Menú Principal" } },
-          { type: "reply", reply: { id: "menu_cancel", title: "Cancelar" } },
-        ],
-      },
-    },
   }, AUTH);
 }
 
@@ -177,7 +156,7 @@ function sendZonaGroupButtons(to) {
 function sendZonaList(to, start, end) {
   const rows = [];
   for (let z = start; z <= end; z++) {
-    const label = z === SPECIAL_ZONA ? `Zona ${z} ${ZONA_EMOJI[z]}` : `Zona ${z} ${ZONA_EMOJI[z]}`;
+    const label = `Zona ${z} ${ZONA_EMOJI[z] || ""}`;
     rows.push({ id: `zona_${z}`, title: label });
   }
   return axios.post(GRAPH_URL, {
@@ -197,9 +176,7 @@ function sendZonaList(to, start, end) {
 // confirm zona
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
-  const headerText = z === SPECIAL_ZONA
-    ? `Zona seleccionada: ${z} ${emoji} (bloqueada)`
-    : `Zona seleccionada: ${z} ${emoji}`;
+  const headerText = `Zona seleccionada: ${z} ${emoji}`; // ללא "(bloqueada)"
 
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
@@ -253,9 +230,7 @@ async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const text =
     `Listo ✅  ${service} • Zona ${zone} ${emoji} • ${cityTitle}.\n` +
     `En breve te contactarán profesionales cercanos.\n\nServicio24`;
-  await sendText(to, text);
-  // Dar salida clara al usuario
-  await sendMenuPrincipal(to, "Tu solicitud fue enviada. ¿Deseas volver al menú?");
+  await sendText(to, text); // ללא כפתורי המשך
 }
 
 // ---------------- Webhook ----------------
@@ -341,17 +316,6 @@ app.post("/webhook", async (req, res) => {
           // Inicio
           if (id === "start_yes") { s.started = true; await sendRoleButtons(from); continue; }
           if (id === "start_no")  { await sendText(from, "Operación cancelada.\n\nServicio24"); continue; }
-
-          // Menú y cancelar disponibles en cualquier punto
-          if (id === "menu_main") { 
-            s.city = null; s.zone = null; s.zoneConfirmed = false; s.serviceId = null;
-            await sendRoleButtons(from);
-            continue; 
-          }
-          if (id === "menu_cancel") { 
-            await sendText(from, "Operación cancelada.\n\nServicio24"); 
-            continue; 
-          }
 
           // Rol
           if (id === "role_cliente") { await sendCityMenu(from); continue; }
