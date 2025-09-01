@@ -40,17 +40,16 @@ function canConfirmOnce(userId, ms = 2500) {
 const CITIES = [{ id: "city_guatemala", title: "Ciudad de Guatemala" }];
 
 const SERVICES = [
-  { id: "srv_plomero",      title: "🚰  Plomero",      label: "Plomero" },
-  { id: "srv_electricista", title: "⚡  Electricista",  label: "Electricista" },
-  { id: "srv_cerrajero",    title: "🔑  Cerrajero",    label: "Cerrajero" },
-  { id: "srv_aire",         title: "❄️  Aire acondicionado", label: "Aire acondicionado" },
-  { id: "srv_mecanico",     title: "🛠️  Mecánico",     label: "Mecánico" },
-  { id: "srv_grua",         title: "🛻  Servicio de grúa", label: "Servicio de grúa" },
-  { id: "srv_mudanza",      title: "🚚  Mudanza",      label: "Mudanza" },
+  { id: "srv_plomero",      title: "🚰  Plomero",                 label: "Plomero" },
+  { id: "srv_electricista", title: "⚡  Electricista",             label: "Electricista" },
+  { id: "srv_cerrajero",    title: "🔑  Cerrajero",               label: "Cerrajero" },
+  { id: "srv_aire",         title: "❄️  Aire acondicionado",      label: "Aire acondicionado" },
+  { id: "srv_mecanico",     title: "🛠️  Mecánico",                label: "Mecánico" },
+  { id: "srv_grua",         title: "🛻  Servicio de grúa",         label: "Servicio de grúa" },
+  { id: "srv_mudanza",      title: "🚚  Mudanza",                 label: "Mudanza" },
 ];
 const SERVICE_LABEL = Object.fromEntries(SERVICES.map(s => [s.id, s.label]));
 
-const SPECIAL_ZONA = 7; // LOCKED
 const ZONA_EMOJI = {
   1:"🏛️",2:"🍺",3:"🕊️",4:"💰",5:"🏟️",6:"🏘️",7:"🏺",8:"🚌",9:"🏨",10:"🎉",
   11:"🛒",12:"🧰",13:"✈️",14:"🏢",15:"🎓",16:"🏰",17:"🏭",18:"🛣️",19:"🔧",20:"🏚️",
@@ -176,7 +175,7 @@ function sendZonaList(to, start, end) {
 // confirm zona
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
-  const headerText = `Zona seleccionada: ${z} ${emoji}`; // ללא "(bloqueada)"
+  const headerText = `Zona seleccionada: ${z} ${emoji}`; // בלי "(bloqueada)"
 
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
@@ -190,6 +189,7 @@ function sendZonaConfirm(to, z) {
       action: {
         buttons: [
           { type: "reply", reply: { id: "zona_confirm", title: "Confirmar" } },
+        // אפשר לשנות אזור
           { type: "reply", reply: { id: "zona_change",  title: "Cambiar zona" } },
         ]
       }
@@ -197,7 +197,7 @@ function sendZonaConfirm(to, z) {
   }, AUTH);
 }
 
-// services list (incluye consentimiento)
+// services list
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   const consent = "_Al continuar, aceptas recibir llamadas y mensajes de profesionales. Sin costo._";
@@ -230,7 +230,7 @@ async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const text =
     `Listo ✅  ${service} • Zona ${zone} ${emoji} • ${cityTitle}.\n` +
     `En breve te contactarán profesionales cercanos.\n\nServicio24`;
-  await sendText(to, text); // ללא כפתורי המשך
+  await sendText(to, text); // אין כפתורי המשך
 }
 
 // ---------------- Webhook ----------------
@@ -295,7 +295,6 @@ app.post("/webhook", async (req, res) => {
 
           // Servicio
           if (SERVICE_LABEL[id]) {
-            // Si el usuario eligió servicio antes de confirmar zona
             if (!s.zoneConfirmed) {
               await sendText(from, "Primero selecciona y confirma tu zona para continuar.");
               await sendZonaGroupButtons(from);
@@ -330,12 +329,11 @@ app.post("/webhook", async (req, res) => {
           if (id === "zona_change") { await sendZonaGroupButtons(from); continue; }
           if (id === "zona_confirm") {
             if (!s.zone) { await sendZonaGroupButtons(from); continue; }
-            // Debounce para evitar doble confirm
-            if (!canConfirmOnce(from)) { continue; }
+            if (!canConfirmOnce(from)) { continue; } // evita doble confirm
             s.zoneConfirmed = true;
             const cityTitle = s.city?.title || "Ciudad de Guatemala";
             console.log("zone_confirmed", { from, zone: s.zone });
-            await sendServicesList(from, cityTitle, s.zone);
+            await sendServicesList(from, cityTitle, s.zone); // ממשיך לשירותים
             continue;
           }
         }
