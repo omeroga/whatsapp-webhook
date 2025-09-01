@@ -1,12 +1,12 @@
 // index.js
 // === Servicio24: emojis oficiales (NO CAMBIAR sin instrucción) ===
 // Servicios:
-// 🚰  Plomero | ⚡  Electricista | 🔑  Cerrajero | ❄️  Aire acondicionado
-// 🛠️  Mecánico | 🛻  Servicio de grúa | 🚚  Mudanza
-// Zonas (1–25):
-// 1 🏛️ | 2 🍺 | 3 🕊️ | 4 💰 | 5 🏟️ | 6 🏘️ | 7 🌳 | 8 🚌 | 9 🏨 | 10 🎉
-// 11 🛒 | 12 🧰 | 13 ✈️ | 14 🏢 | 15 🎓 | 16 🏰 | 17 🏭 | 18 🛣️ | 19 🔧 | 20 🏚️
-// 21 🚧 | 22 📦 | 23 🚋 | 24 🏗️ | 25 🌳
+// 🚰 Plomero | ⚡ Electricista | 🔑 Cerrajero | ❄️ Aire acondicionado
+// 🛠️ Mecánico | 🛻 Servicio de grúa | 🚚 Mudanza
+// Zonas (1–25) — EMOJI por zona (resumen):
+// 1 🏛️, 2 🍺, 3 🕊️, 4 💰, 5 🏟️, 6 🏘️, 7 🌳, 8 🚌, 9 🏨, 10 🎉,
+// 11 🛒, 12 🧰, 13 ✈️, 14 🏢, 15 🎓, 16 🏰, 17 🏭, 18 🛣️, 19 🔧,
+// 20 🏚️, 21 🚧, 22 📦, 23 🚋, 24 🏗️, 25 🌳
 
 const express = require("express");
 const axios = require("axios");
@@ -14,7 +14,7 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// --------- Consts / Helpers ----------
+// ---------- Consts / Helpers ----------
 const GRAPH_URL = `https://graph.facebook.com/v${process.env.GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
 const AUTH = {
   headers: {
@@ -23,20 +23,20 @@ const AUTH = {
   },
 };
 
-// === session memory to avoid re-sending the welcome ===
-const SESSION_TTL_MS = 15 * 60 * 1000; // 15 minutes
-const sessions = new Map(); // key: user, value: { lastWelcome, cityId }
-
-// ---- Zonas emojis map ----
-const ZONE_EMOJI = {
-  z1: "🏛️",  z2: "🍺",  z3: "🕊️",  z4: "💰",  z5: "🏟️",
-  z6: "🏘️",  z7: "🌳",  z8: "🚌",  z9: "🏨",  z10: "🎉",
-  z11: "🛒", z12: "🧰", z13: "✈️", z14: "🏢", z15: "🎓",
-  z16: "🏰", z17: "🏭", z18: "🛣️", z19: "🔧", z20: "🏚️",
-  z21: "🚧", z22: "📦", z23: "🚋", z24: "🏗️", z25: "🌳",
+// Zonas emojis (1..25)
+const ZONA_EMOJI = {
+  1: "🏛️",  2: "🍺",  3: "🕊️",  4: "💰",  5: "🏟️",
+  6: "🏘️",  7: "🌳",  8: "🚌",  9: "🏨", 10: "🎉",
+ 11: "🛒", 12: "🧰", 13: "✈️", 14: "🏢", 15: "🎓",
+ 16: "🏰", 17: "🏭", 18: "🛣️", 19: "🔧", 20: "🏚️",
+ 21: "🚧", 22: "📦", 23: "🚋", 24: "🏗️", 25: "🌳",
 };
 
-// --------- Senders ----------
+// === session memory (debounce) ===
+const SESSION_TTL_MS = 15 * 60 * 1000;
+const sessions = new Map(); // key: user, value: { lastWelcome }
+
+// ---------- Senders ----------
 async function sendText(to, text) {
   return axios.post(
     GRAPH_URL,
@@ -45,7 +45,6 @@ async function sendText(to, text) {
   );
 }
 
-// botón de roles
 async function sendRoleButtons(to) {
   return axios.post(
     GRAPH_URL,
@@ -70,8 +69,8 @@ async function sendRoleButtons(to) {
   );
 }
 
-// lista de ciudades (por ahora solo Ciudad de Guatemala)
 async function sendCityList(to) {
+  // (כרגע עיר אחת, ניתן להרחיב)
   return axios.post(
     GRAPH_URL,
     {
@@ -88,7 +87,9 @@ async function sendCityList(to) {
           sections: [
             {
               title: "Ciudades",
-              rows: [{ id: "city_gua", title: "Ciudad de Guatemala" }],
+              rows: [
+                { id: "city_gtm", title: "Ciudad de Guatemala" },
+              ],
             },
           ],
         },
@@ -98,9 +99,7 @@ async function sendCityList(to) {
   );
 }
 
-// lista de servicios (muestra ciudad en el subtítulo si יש)
-async function sendClientList(to, cityName = null) {
-  const subtitle = cityName ? `Servicio24 · ${cityName}` : "Servicio24";
+async function sendClientList(to, cityLabel) {
   return axios.post(
     GRAPH_URL,
     {
@@ -110,8 +109,12 @@ async function sendClientList(to, cityName = null) {
       interactive: {
         type: "list",
         header: { type: "text", text: "Servicios disponibles" },
-        body: { text: "Elige el profesional que necesitas:" },
-        footer: { text: subtitle },
+        body: {
+          text:
+            "*Elige el profesional que necesitas:*\n" +
+            (cityLabel ? `Servicio24 • ${cityLabel}` : "Servicio24"),
+        },
+        footer: { text: "Servicio24" },
         action: {
           button: "Elegir profesional",
           sections: [
@@ -135,49 +138,13 @@ async function sendClientList(to, cityName = null) {
   );
 }
 
-// ---- Zonas: lista מלאה 1–25 בשלוש קבוצות ----
-function makeZonaRows(from, to) {
-  const rows = [];
-  for (let n = from; n <= to; n++) {
-    const id = `zona_${n}`;
-    const key = `z${n}`;
-    const emoji = ZONE_EMOJI[key] || "";
-    rows.push({ id, title: `Zona ${n}  ${emoji}`.trim() });
-  }
-  return rows;
-}
+// === ZONAS ===
 
-async function sendZonaList(to, cityId = "GUA") {
-  // ניתן להרחיב cityId בעתיד; כרגע לא משפיע על ה-UI
-  return axios.post(
-    GRAPH_URL,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "list",
-        header: { type: "text", text: "Zonas" },
-        body: { text: "Elige tu zona exacta:" },
-        footer: { text: "Servicio24" },
-        action: {
-          button: "Elegir zona",
-          sections: [
-            { title: "Zonas 1–10", rows: makeZonaRows(1, 10) },
-            { title: "Zonas 11–20", rows: makeZonaRows(11, 20) },
-            { title: "Zonas 21–25", rows: makeZonaRows(21, 25) },
-          ],
-        },
-      },
-    },
-    AUTH
-  );
-}
-
-// אישור/שינוי זונה
-async function sendZoneConfirm(to, zoneId) {
-  const n = parseInt(zoneId.replace("z", ""), 10);
-  const emoji = ZONE_EMOJI[zoneId] || "";
+// (A) כפתורי קבוצות — הכל בהודעה אחת (בלי טקסט נפרד)
+async function sendZonaGroupButtonsIntro(to, serviceName) {
+  const body =
+    `*Perfecto*, seleccionaste: *${serviceName}*.\n\n` +
+    "Ahora selecciona tu zona para encontrar proveedores cercanos.";
   return axios.post(
     GRAPH_URL,
     {
@@ -186,13 +153,86 @@ async function sendZoneConfirm(to, zoneId) {
       type: "interactive",
       interactive: {
         type: "button",
-        header: { type: "text", text: `Zona seleccionada: ${n}` },
+        header: { type: "text", text: "Zonas 1–25" },
+        body: { text: body },
+        footer: { text: "Servicio24" },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: "zona_group_1_10",  title: "Zona 1–10" } },
+            { type: "reply", reply: { id: "zona_group_11_20", title: "Zona 11–20" } },
+            { type: "reply", reply: { id: "zona_group_21_25", title: "Zona 21–25" } },
+          ],
+        },
+      },
+    },
+    AUTH
+  );
+}
+
+// (B) ליסט של זונות ספציפיות (10/10/5) עם אימוג'י בכל שורה
+function zonaRows(from, to) {
+  const rows = [];
+  for (let n = from; n <= to; n++) {
+    rows.push({
+      id: `zona_pick_${n}`,
+      title: `${ZONA_EMOJI[n]}  Zona ${n}`,
+    });
+  }
+  return rows;
+}
+
+async function sendZonaList(to, groupId) {
+  let title = "", rows = [];
+  if (groupId === "zona_group_1_10") {
+    title = "Zonas 1–10";
+    rows = zonaRows(1, 10);
+  } else if (groupId === "zona_group_11_20") {
+    title = "Zonas 11–20";
+    rows = zonaRows(11, 20);
+  } else {
+    title = "Zonas 21–25";
+    rows = zonaRows(21, 25);
+  }
+
+  return axios.post(
+    GRAPH_URL,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "list",
+        header: { type: "text", text: title },
+        body: { text: "Elige tu zona exacta:" },
+        footer: { text: "Servicio24" },
+        action: {
+          button: "Elegir zona",
+          sections: [{ title, rows }],
+        },
+      },
+    },
+    AUTH
+  );
+}
+
+// (C) מסך אישור זונה (אורגני: שני כפתורים)
+async function sendZonaConfirm(to, n) {
+  const em = ZONA_EMOJI[n] || "";
+  return axios.post(
+    GRAPH_URL,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        header: { type: "text", text: `Zona seleccionada: ${n} ${em}` },
         body: { text: "¿Desea continuar con esta zona?" },
         footer: { text: "Servicio24" },
         action: {
           buttons: [
-            { type: "reply", reply: { id: `confirm_zone_${zoneId}`, title: "Confirmar" } },
-            { type: "reply", reply: { id: "change_zone", title: "Cambiar zona" } },
+            { type: "reply", reply: { id: `zona_confirm_${n}`, title: "Confirmar" } },
+            { type: "reply", reply: { id: "zona_change", title: "Cambiar zona" } },
           ],
         },
       },
@@ -213,63 +253,8 @@ async function handleProfession(to, id) {
     srv_mudanza: "Mudanza",
   };
   const name = map[id] || "Profesional";
-
-  // הודעת אישור מקצוע
-  await sendText(
-    to,
-    `*Perfecto*, seleccionaste: *${name}*.\n\nAhora selecciona tu zona para encontrar proveedores cercanos.`
-  );
-
-  // השהייה + ריטריי לפתיחת ה-List בוודאות
-  await new Promise((r) => setTimeout(r, 1000));
-  try {
-    await sendZonaList(to, "GUA");
-  } catch (e1) {
-    await new Promise((r) => setTimeout(r, 1200));
-    try {
-      await sendZonaList(to, "GUA");
-    } catch (e2) {
-      console.error("sendZonaList failed twice:", e2?.response?.data || e2.message);
-      await sendText(
-        to,
-        "No pude abrir el menú de *Zonas*. Escribe tu zona (1–25) o responde con *menu* para reintentar."
-      );
-    }
-  }
-}
-
-// --- intent & source detection (organic vs paid) ---
-const SERVICE_WORDS = {
-  plomero: "srv_plomero",
-  electricista: "srv_electricista",
-  cerrajero: "srv_cerrajero",
-  aire: "srv_aire",
-  mecanico: "srv_mecanico",
-  mecánico: "srv_mecanico",
-  grua: "srv_grua",
-  grúa: "srv_grua",
-  mudanza: "srv_mudanza",
-};
-
-function parseOriginAndIntent(msg) {
-  const out = { isReferral: !!msg.referral, source: "organic", serviceId: null, zone: null };
-
-  if (msg.type === "text" && msg.text?.body) {
-    const low = msg.text.body.toLowerCase();
-    // service hashtag
-    for (const key of Object.keys(SERVICE_WORDS)) {
-      if (low.includes(`#${key}`)) out.serviceId = SERVICE_WORDS[key];
-    }
-    // zona (z7 / zona 7)
-    const m = low.match(/\b(?:zona\s*)?z?(\d{1,2})\b/);
-    if (m) {
-      const n = parseInt(m[1], 10);
-      if (n >= 1 && n <= 25) out.zone = `z${n}`;
-    }
-  }
-
-  if (out.isReferral || out.serviceId || out.zone) out.source = "paid";
-  return out;
+  // שולחים *באותה* הודעה את ההנחיה + הכפתורים לקבוצות הזונה
+  return sendZonaGroupButtonsIntro(to, name);
 }
 
 // --------- Webhook: GET (verify) ----------
@@ -278,7 +263,6 @@ app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
@@ -288,120 +272,76 @@ app.get("/webhook", (req, res) => {
 // --------- Webhook: POST (messages) ----------
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-    const messages = value?.messages;
-
+    const messages = req.body.entry?.[0]?.changes?.[0]?.value?.messages;
     if (Array.isArray(messages) && messages.length) {
       for (const msg of messages) {
         const from = msg.from;
 
-        // detect origin / intent
-        const intent = parseOriginAndIntent(msg);
-
-        // ===== Paid flow (referral) =====
-        if (intent.isReferral) {
-          if (intent.zone) {
-            await sendZoneConfirm(from, intent.zone);
-          } else {
-            await sendZonaList(from, "GUA");
-          }
-          continue;
-        }
-
-        // ===== ORGÁNICO =====
+        // 1) Free text -> role menu (throttle)
         if (msg.type === "text") {
-          const low = (msg.text?.body || "").toLowerCase().trim();
-
-          // קיצור דרך: "menu" לפתיחת zonas מחדש
-          if (low === "menu") {
-            await sendZonaList(from, "GUA");
-            continue;
-          }
-
-          // קיצור דרך: מספר 1–25 → אישור/שינוי
-          const num = low.match(/^(?:zona\s*)?(\d{1,2})$/i);
-          if (num) {
-            const n = parseInt(num[1], 10);
-            if (n >= 1 && n <= 25) {
-              await sendZoneConfirm(from, `z${n}`);
-              continue;
-            }
-          }
-
-          // throttle הודעת פתיחה
           const now = Date.now();
-          const session = sessions.get(from);
-          if (!session || now - (session.lastWelcome || 0) > SESSION_TTL_MS) {
+          const s = sessions.get(from);
+          if (!s || now - s.lastWelcome > SESSION_TTL_MS) {
             await sendRoleButtons(from);
-            sessions.set(from, { ...(session || {}), lastWelcome: now });
+            sessions.set(from, { lastWelcome: now });
           }
           continue;
         }
 
-        // אינטראקטיב: כפתורים
         const interactive = msg.interactive;
 
+        // 2) Button replies
         if (interactive?.type === "button_reply") {
           const id = interactive.button_reply?.id;
 
-          if (id === "role_cliente") {
-            await sendCityList(from);
-            sessions.set(from, { ...(sessions.get(from) || {}), lastWelcome: Date.now() });
+          if (id === "role_cliente") { await sendCityList(from); continue; }
+          if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción…"); continue; }
+
+          // ZONA groups → open list (single message)
+          if (id === "zona_group_1_10" || id === "zona_group_11_20" || id === "zona_group_21_25") {
+            await sendZonaList(from, id);
             continue;
           }
 
-          if (id === "role_tecnico") {
-            await sendText(from, "La función de *Técnico* está en construcción…");
-            sessions.set(from, { ...(sessions.get(from) || {}), lastWelcome: Date.now() });
+          // ZONA confirm
+          if (id?.startsWith("zona_confirm_")) {
+            const n = parseInt(id.split("_").pop(), 10);
+            await sendText(from, `Listo ✅ Zona ${n} ${ZONA_EMOJI[n] || ""}. En breve te contactarán 1–3 proveedores cercanos.`);
             continue;
           }
 
-          if (id === "change_zone") {
-            await sendZonaList(from, "GUA");
-            continue;
-          }
-
-          // confirm_zone_z7 → חלץ z7
-          if (id?.startsWith("confirm_zone_")) {
-            const zoneId = id.replace("confirm_zone_", ""); // למשל z7
-            const emoji = ZONE_EMOJI[zoneId] || "";
-            await sendText(
-              from,
-              `Zona confirmada: *${zoneId.replace("z", "")}* ${emoji}\nEn breve te contactarán 1–3 proveedores cercanos.`
-            );
+          if (id === "zona_change") {
+            await sendZonaGroupButtonsIntro(from, ""); // sin nombre servicio
             continue;
           }
         }
 
-        // אינטראקטיב: רשימות (city / service / zona)
+        // 3) List replies (city / service / zona exacta)
         if (interactive?.type === "list_reply") {
-          const id = interactive.list_reply?.id;
+          const lr = interactive.list_reply;
+          const id = lr?.id;
 
-          if (id === "city_gua") {
-            // שמירת עיר והמשך לרשימת שירותים
-            const s = sessions.get(from) || {};
-            sessions.set(from, { ...s, cityId: "GUA" });
+          // City
+          if (id === "city_gtm") {
             await sendClientList(from, "Ciudad de Guatemala");
             continue;
           }
 
+          // Service
           if (id?.startsWith("srv_")) {
             await handleProfession(from, id);
-            sessions.set(from, { ...(sessions.get(from) || {}), lastWelcome: Date.now() });
             continue;
           }
 
-          if (id?.startsWith("zona_")) {
-            const n = parseInt(id.split("_")[1], 10);
-            await sendZoneConfirm(from, `z${n}`);
+          // Zona exacta (zona_pick_N)
+          if (id?.startsWith("zona_pick_")) {
+            const n = parseInt(id.split("_").pop(), 10);
+            await sendZonaConfirm(from, n);
             continue;
           }
         }
       }
     }
-
     return res.sendStatus(200);
   } catch (err) {
     console.error("Webhook POST error:", err?.response?.data || err.message);
