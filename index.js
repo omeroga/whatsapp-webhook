@@ -1,11 +1,12 @@
 // index.js
 // === Servicio24: V2 (Cliente, cleaned sobre V1 BRONZE LOCKED) ===
 // Servicios oficiales (LOCKED):
-// 🚰 Plomero | ⚡ Electricista | 🔑 Cerrajero | ❄️ Aire acondicionado | 🛠️ Mecánico | 🛻 Servicio de grúa | 🚚 Mudanza
-// Zonas 1-25 (LOCKED):
-// 1 🏛️ | 2 🍺 | 3 🕊️ | 4 💰 | 5 🏟️ | 6 🏘️ | 7 🏺 | 8 🚌 | 9 🏨 | 10 🎉 |
-// 11 🛒 | 12 🧰 | 13 ✈️ | 14 🏢 | 15 🎓 | 16 🏰 | 17 🏭 | 18 🛣️ | 19 🔧 | 20 🏚️ |
-// 21 🚧 | 22 📦 | 23 🚋 | 24 🏗️ | 25 🌳
+// Plomero 🚰 | Electricista ⚡ | Cerrajero 🔑 | Aire acondicionado ❄️ | Mecánico 🛠️ | Servicio de grúa 🛻 | Mudanza 🚚
+/* Zonas 1-25 (LOCKED):
+1 🏛️ | 2 🍺 | 3 🕊️ | 4 💰 | 5 🏟️ | 6 🏘️ | 7 🏺 | 8 🚌 | 9 🏨 | 10 🎉 |
+11 🛒 | 12 🧰 | 13 ✈️ | 14 🏢 | 15 🎓 | 16 🏰 | 17 🏭 | 18 🛣️ | 19 🔧 | 20 🏚️ |
+21 🚧 | 22 📦 | 23 🚋 | 24 🏗️ | 25 🌳
+*/
 
 const express = require("express");
 const axios = require("axios");
@@ -39,14 +40,15 @@ function canConfirmOnce(userId, ms = 2500) {
 // ---------------- Datos LOCKED ----------------
 const CITIES = [{ id: "city_guatemala", title: "Ciudad de Guatemala" }];
 
+// טבלת ברזל לבעלי מקצוע: שם + אימוג'י, ללא שינוי סוגי האימוג'ים, רק מיקום בעת ההצגה
 const SERVICES = [
-  { id: "srv_plomero",      title: "🚰  Plomero",                 label: "Plomero" },
-  { id: "srv_electricista", title: "⚡  Electricista",             label: "Electricista" },
-  { id: "srv_cerrajero",    title: "🔑  Cerrajero",               label: "Cerrajero" },
-  { id: "srv_aire",         title: "❄️  Aire acondicionado",      label: "Aire acondicionado" },
-  { id: "srv_mecanico",     title: "🛠️  Mecánico",                label: "Mecánico" },
-  { id: "srv_grua",         title: "🛻  Servicio de grúa",         label: "Servicio de grúa" },
-  { id: "srv_mudanza",      title: "🚚  Mudanza",                 label: "Mudanza" },
+  { id: "srv_plomero",      label: "Plomero",            emoji: "🚰" },
+  { id: "srv_electricista", label: "Electricista",       emoji: "⚡" },
+  { id: "srv_cerrajero",    label: "Cerrajero",          emoji: "🔑" },
+  { id: "srv_aire",         label: "Aire acondicionado", emoji: "❄️" },
+  { id: "srv_mecanico",     label: "Mecánico",           emoji: "🛠️" },
+  { id: "srv_grua",         label: "Servicio de grúa",   emoji: "🛻" },
+  { id: "srv_mudanza",      label: "Mudanza",            emoji: "🚚" },
 ];
 const SERVICE_LABEL = Object.fromEntries(SERVICES.map(s => [s.id, s.label]));
 
@@ -155,7 +157,7 @@ function sendZonaGroupButtons(to) {
 function sendZonaList(to, start, end) {
   const rows = [];
   for (let z = start; z <= end; z++) {
-    const label = `Zona ${z} ${ZONA_EMOJI[z] || ""}`;
+    const label = `Zona ${z} ${ZONA_EMOJI[z] || ""}`; // מילה ואז אימוג'י
     rows.push({ id: `zona_${z}`, title: label });
   }
   return axios.post(GRAPH_URL, {
@@ -175,7 +177,7 @@ function sendZonaList(to, start, end) {
 // confirm zona
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
-  const headerText = `Zona seleccionada: ${z} ${emoji}`; // בלי "(bloqueada)"
+  const headerText = `Zona seleccionada: ${z} ${emoji}`; // ללא "(bloqueada)"
 
   return axios.post(GRAPH_URL, {
     messaging_product: "whatsapp",
@@ -189,7 +191,6 @@ function sendZonaConfirm(to, z) {
       action: {
         buttons: [
           { type: "reply", reply: { id: "zona_confirm", title: "Confirmar" } },
-        // אפשר לשנות אזור
           { type: "reply", reply: { id: "zona_change",  title: "Cambiar zona" } },
         ]
       }
@@ -197,7 +198,7 @@ function sendZonaConfirm(to, z) {
   }, AUTH);
 }
 
-// services list
+// services list — מציגים "שם + אימוג'י" (האימוג'י בצד ימין)
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   const consent = "_Al continuar, aceptas recibir llamadas y mensajes de profesionales. Sin costo._";
@@ -215,7 +216,10 @@ function sendServicesList(to, cityTitle, z) {
         sections: [
           {
             title: "Profesionales",
-            rows: SERVICES.map(s => ({ id: s.id, title: s.title }))
+            rows: SERVICES.map(s => ({
+              id: s.id,
+              title: `${s.label} ${s.emoji}` // מילה ואז אימוג'י
+            }))
           }
         ]
       }
@@ -223,14 +227,15 @@ function sendServicesList(to, cityTitle, z) {
   }, AUTH);
 }
 
-// final lead
+// final lead — מציגים "שם + אימוג'י"
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
-  const service = SERVICE_LABEL[serviceId] || "Profesional";
-  const emoji = ZONA_EMOJI[zone] || "";
+  const serviceObj = SERVICES.find(s => s.id === serviceId);
+  const serviceText = serviceObj ? `${serviceObj.label} ${serviceObj.emoji}` : "Profesional 👤";
+  const zoneEmoji = ZONA_EMOJI[zone] || "";
   const text =
-    `Listo ✅  ${service} • Zona ${zone} ${emoji} • ${cityTitle}.\n` +
+    `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\n` +
     `En breve te contactarán profesionales cercanos.\n\nServicio24`;
-  await sendText(to, text); // אין כפתורי המשך
+  await sendText(to, text);
 }
 
 // ---------------- Webhook ----------------
