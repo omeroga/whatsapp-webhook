@@ -261,17 +261,18 @@ app.post("/webhook", async (req, res) => {
             }
           }
 
-          // service chosen
+          // service chosen  *** FIXED to avoid loop ***
           if (SERVICE_LABEL[id]) {
             s.serviceId = id;
-            if (s.city && s.zoneConfirmed) {
-              await sendLeadReady(from, s.city.title, s.zone, s.serviceId);
-            } else if (!s.zoneConfirmed) {
-              await sendZonaGroupButtons(from);
-            } else {
+
+            if (s.zoneConfirmed) {
               const cityTitle = s.city?.title || "Ciudad de Guatemala";
-              await sendServicesList(from, cityTitle, s.zone);
+              await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
+              continue;
             }
+
+            // if zone not confirmed yet, guide back to zones
+            await sendZonaGroupButtons(from);
             continue;
           }
         }
