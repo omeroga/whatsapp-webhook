@@ -9,7 +9,7 @@
 // 🛻  Servicio de grúa
 // 🚚  Mudanza
 //
-// Zonas (Ciudad de Guatemala):
+// Zonas (Ciudad de Guatemala) - fijadas:
 // Zona 1 🏛️ | Zona 2 🍺 | Zona 3 🕊️ | Zona 4 💰 | Zona 5 🏟️
  // Zona 6 🏘️ | Zona 7 🏺 | Zona 8 🚌 | Zona 9 🏨 | Zona 10 🎉
  // Zona 11 🛒 | Zona 12 🧰 | Zona 13 ✈️ | Zona 14 🏢 | Zona 15 🎓
@@ -65,7 +65,7 @@ const CITIES = [
       { id: "z25", title: "Zona 25 🌳" }
     ]
   },
-  // ערים נוספות ייכנסו כאן בעתיד עם enabled:false
+  // ערים נוספות יכנסו כאן בעתיד עם enabled:false
 ];
 
 // === session memory ===
@@ -74,14 +74,16 @@ const sessions = new Map(); // key: user -> { lastWelcome, city }
 
 // --------- Send helpers ----------
 async function sendText(to, text) {
-  return axios.post(GRAPH_URL,
+  return axios.post(
+    GRAPH_URL,
     { messaging_product: "whatsapp", to, type: "text", text: { body: text } },
     AUTH
   );
 }
 
 async function sendRoleButtons(to) {
-  return axios.post(GRAPH_URL,
+  return axios.post(
+    GRAPH_URL,
     {
       messaging_product: "whatsapp",
       to,
@@ -103,13 +105,42 @@ async function sendRoleButtons(to) {
   );
 }
 
-// ---- City list (organic flow) ----
+// ---- Paid city confirm/change (used רק בממומן) ----
+async function sendCityConfirmOrChange(to, cityId) {
+  const city = CITIES.find(c => c.id === cityId) || CITIES.find(c => c.enabled);
+  const cityName = city ? city.name : "Ciudad";
+
+  return axios.post(
+    GRAPH_URL,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        header: { type: "text", text: "Ciudad detectada" },
+        body: { text: `¿Estás en *${cityName}*?` },
+        footer: { text: "Servicio24" },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: `confirm_city_${city.id}`, title: "Confirmar ciudad" } },
+            { type: "reply", reply: { id: "change_city", title: "Cambiar ciudad" } }
+          ]
+        }
+      }
+    },
+    AUTH
+  );
+}
+
+// ---- City list (orgánico y cambio) ----
 async function sendCityList(to) {
   const rows = CITIES
     .filter(c => c.enabled)
     .map(c => ({ id: `city_${c.id}`, title: c.name }));
 
-  return axios.post(GRAPH_URL,
+  return axios.post(
+    GRAPH_URL,
     {
       messaging_product: "whatsapp",
       to,
@@ -134,7 +165,8 @@ async function sendClientList(to, cityId) {
   const city = CITIES.find(c => c.id === cityId) || CITIES.find(c => c.enabled);
   const footerTxt = city ? `Servicio24 • ${city.name}` : "Servicio24";
 
-  return axios.post(GRAPH_URL,
+  return axios.post(
+    GRAPH_URL,
     {
       messaging_product: "whatsapp",
       to,
@@ -181,7 +213,8 @@ async function sendZonaList(to, cityId) {
   if (sec2.length) sections.push({ title: "Zonas 11–20", rows: sec2 });
   if (sec3.length) sections.push({ title: "Zonas 21–25", rows: sec3 });
 
-  return axios.post(GRAPH_URL,
+  return axios.post(
+    GRAPH_URL,
     {
       messaging_product: "whatsapp",
       to,
@@ -221,6 +254,15 @@ async function handleProfession(to, id, cityId) {
   await sendZonaList(to, cityId);
 }
 
+// --------- Simple paid intent detection (placeholder) ----------
+function isPaidLead(msg) {
+  // אם יש referral – נחשב כממומן
+  if (msg.referral) return true;
+  // אם יש האשטאג של שירות – נחשב כממומן
+  const t = msg.text?.body?.toLowerCase() || "";
+  return /#(plomero|electricista|cerrajero|aire|mecanico|mecánico|grua|grúa|mudanza)/.test(t);
+}
+
 // --------- Webhook: GET ----------
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -247,8 +289,11 @@ app.post("/webhook", async (req, res) => {
         const sess = sessions.get(from) || { city: "GUA" };
         sessions.set(from, sess);
 
+        // paid vs organic
+        const paid = isPaidLead(msg);
+
         // 1) Free text -> role menu (throttled)
-        if (msg.type === "text") {
+        if (msg.type === "text" && !paid) {
           const throttled = sess.lastWelcome && (now - sess.lastWelcome <= SESSION_TTL_MS);
           if (!throttled) {
             await sendRoleButtons(from);
@@ -260,7 +305,7 @@ app.post("/webhook", async (req, res) => {
         // 2) Interactive replies
         const interactive = msg.interactive;
 
-        // 2a) Buttons (organic flow)
+        // 2a) Buttons
         if (interactive?.type === "button_reply") {
           const id = interactive.button_reply.id;
 
@@ -273,6 +318,19 @@ app.post("/webhook", async (req, res) => {
 
           if (id === "role_tecnico") {
             await sendText(from, "La función de *Técnico* está en construcción…");
+            sessions.set(from, { ...sess, lastWelcome: now });
+            continue;
+          }
+
+          // ממומן: אישור/שינוי עיר
+          if (id.startsWith("confirm_city_")) {
+            const cityId = id.replace("confirm_city_", "");
+            sessions.set(from, { ...sess, city: cityId, lastWelcome: now });
+            await sendClientList(from, cityId);
+            continue;
+          }
+          if (id === "change_city") {
+            await sendCityList(from);
             sessions.set(from, { ...sess, lastWelcome: now });
             continue;
           }
@@ -304,6 +362,13 @@ app.post("/webhook", async (req, res) => {
             sessions.set(from, { ...sess, lastWelcome: now });
             continue;
           }
+        }
+
+        // paid text entry without interactive yet → תן אישור עיר
+        if (paid && msg.type === "text") {
+          await sendCityConfirmOrChange(from, sess.city || "GUA");
+          sessions.set(from, { ...sess, lastWelcome: now });
+          continue;
         }
       }
     }
