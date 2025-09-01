@@ -65,11 +65,11 @@ const CITIES = [
       { id: "z25", title: "Zona 25 🌳" }
     ]
   },
-  // ערים הבאות יתווספו כאן עם enabled:false כשנרצה לפתוח אותן
+  // ערים נוספות ייכנסו כאן בעתיד עם enabled:false
 ];
 
 // === session memory ===
-const SESSION_TTL_MS = 15 * 60 * 1000;
+const SESSION_TTL_MS = 15 * 60 * 1000; // 15 דקות
 const sessions = new Map(); // key: user -> { lastWelcome, city }
 
 // --------- Send helpers ----------
@@ -103,37 +103,10 @@ async function sendRoleButtons(to) {
   );
 }
 
-// ---- City confirm-or-change (organic) ----
-async function sendCityConfirmOrChange(to, cityId) {
-  const city = CITIES.find(c => c.id === cityId) || CITIES.find(c => c.enabled);
-  const cityName = city ? city.name : "Ciudad";
-
-  return axios.post(GRAPH_URL,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "button",
-        header: { type: "text", text: "Ciudad detectada" },
-        body: { text: `¿Estás en *${cityName}*?` },
-        footer: { text: "Servicio24" },
-        action: {
-          buttons: [
-            { type: "reply", reply: { id: `confirm_city_${city.id}`, title: "Confirmar ciudad" } },
-            { type: "reply", reply: { id: "change_city", title: "Cambiar ciudad" } }
-          ]
-        }
-      }
-    },
-    AUTH
-  );
-}
-
-// ---- City list (for change flow) ----
+// ---- City list (organic flow) ----
 async function sendCityList(to) {
   const rows = CITIES
-    .filter(c => c.enabled) // כרגע רק GUA
+    .filter(c => c.enabled)
     .map(c => ({ id: `city_${c.id}`, title: c.name }));
 
   return axios.post(GRAPH_URL,
@@ -172,7 +145,7 @@ async function sendClientList(to, cityId) {
         body: { text: "\n*Elige el profesional que necesitas:*" },
         footer: { text: footerTxt },
         action: {
-          button: "Elegir",
+          button: "Elegir profesional",
           sections: [
             {
               title: "Profesionales",
@@ -194,10 +167,19 @@ async function sendClientList(to, cityId) {
   );
 }
 
-// ---- After service selection: ask for Zona (list of 25) ----
+// ---- Zonas list split to <=10 per section ----
 async function sendZonaList(to, cityId) {
   const city = CITIES.find(c => c.id === cityId) || CITIES.find(c => c.enabled);
-  const rows = (city?.zonas || []).map(z => ({ id: z.id, title: z.title }));
+  const zonas = city?.zonas || [];
+
+  const sec1 = zonas.slice(0, 10).map(z => ({ id: z.id, title: z.title }));   // 1–10
+  const sec2 = zonas.slice(10, 20).map(z => ({ id: z.id, title: z.title }));  // 11–20
+  const sec3 = zonas.slice(20).map(z => ({ id: z.id, title: z.title }));      // 21–25
+
+  const sections = [];
+  if (sec1.length) sections.push({ title: "Zonas 1–10", rows: sec1 });
+  if (sec2.length) sections.push({ title: "Zonas 11–20", rows: sec2 });
+  if (sec3.length) sections.push({ title: "Zonas 21–25", rows: sec3 });
 
   return axios.post(GRAPH_URL,
     {
@@ -211,7 +193,7 @@ async function sendZonaList(to, cityId) {
         footer: { text: "Servicio24" },
         action: {
           button: "Elegir zona",
-          sections: [{ title: "Zonas", rows }]
+          sections
         }
       }
     },
@@ -219,7 +201,7 @@ async function sendZonaList(to, cityId) {
   );
 }
 
-// --------- Profesiones flow ----------
+// ---- After service selection -> ask Zona ----
 async function handleProfession(to, id, cityId) {
   const map = {
     srv_plomero: "Plomero",
@@ -278,13 +260,13 @@ app.post("/webhook", async (req, res) => {
         // 2) Interactive replies
         const interactive = msg.interactive;
 
-        // 2a) Buttons
+        // 2a) Buttons (organic flow)
         if (interactive?.type === "button_reply") {
           const id = interactive.button_reply.id;
 
           if (id === "role_cliente") {
-            // הצג עיר מזוהה + אפשרות שינוי
-            await sendCityConfirmOrChange(from, sess.city || "GUA");
+            // אורגני: תמיד תפריט ערים
+            await sendCityList(from);
             sessions.set(from, { ...sess, lastWelcome: now });
             continue;
           }
@@ -294,28 +276,13 @@ app.post("/webhook", async (req, res) => {
             sessions.set(from, { ...sess, lastWelcome: now });
             continue;
           }
-
-          // Confirm detected city
-          if (id.startsWith("confirm_city_")) {
-            const cityId = id.replace("confirm_city_", "");
-            sessions.set(from, { ...sess, city: cityId, lastWelcome: now });
-            await sendClientList(from, cityId);
-            continue;
-          }
-
-          // Change city -> open city list
-          if (id === "change_city") {
-            await sendCityList(from);
-            sessions.set(from, { ...sess, lastWelcome: now });
-            continue;
-          }
         }
 
-        // 2b) Lists
+        // 2b) Lists (city / service / zona)
         if (interactive?.type === "list_reply") {
           const id = interactive.list_reply.id;
 
-          // City chosen from list
+          // City chosen
           if (id.startsWith("city_")) {
             const cityId = id.replace("city_", "");
             sessions.set(from, { ...sess, city: cityId, lastWelcome: now });
