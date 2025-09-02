@@ -230,7 +230,7 @@ function sendZonaConfirm(to, z) {
 // services list
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
-  const consent = "_Al continuar, aceptas recibir llamadas y mensajes de profesionales. Sin costo._";
+  const consent = "_Al continuar, aceptas que tus datos se compartan con profesionales cercanos y que puedas recibir sus llamadas o mensajes. Sin costo._";
   return postWA({
     messaging_product: "whatsapp",
     to,
