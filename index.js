@@ -1,8 +1,10 @@
-// index.js — Servicio24 V2 Barzel Stable (Final+Lock)
+// index.js — Servicio24 V2 Barzel Stable + Limits
 // - Graph API v${GRAPH_VERSION} corrected
 // - Redis sessions with in-memory fallback
-// - Full emojis for ZONAS and services
-// - Free-text logic + POST-LEAD LOCK (no loops)
+// - Full emojis for ZONAS and services (word first, emoji after)
+// - Free-text logic: same menu before DONE, final confirmation after DONE
+// - Consent text updated
+// - Anti-spam: cooldown 60m, dedup 6h for same request, daily limit 3
 // - No dotenv (Render reads ENV)
 
 const express = require("express");
@@ -26,6 +28,11 @@ if (!process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) {
   console.error("❌ Missing env: WHATSAPP_TOKEN or PHONE_NUMBER_ID");
   process.exit(1);
 }
+
+// ===== Anti-spam params =====
+const COOLDOWN_MINUTES = parseInt(process.env.LEAD_COOLDOWN_MIN || "60", 10);   // גלובלי בין לידים
+const DEDUP_HOURS      = parseInt(process.env.LEAD_DEDUP_HOURS || "6", 10);     // לאותו שירות+zona+עיר
+const DAILY_LIMIT      = parseInt(process.env.LEAD_DAILY_LIMIT || "3", 10);     // לידים ב-24h פר משתמש
 
 // ===== Redis sessions (fallback to memory) =====
 let redis = null;
@@ -57,13 +64,113 @@ async function sessGet(userId) {
   }
   return mem.get(userId) || null;
 }
-async function sessSet(userId, s, ttlSec = 60 * 60 * 24) { // 24h TTL
+async function sessSet(userId, s, ttlSec = 60 * 60 * 24) { // 24h session TTL
   s.ts = Date.now();
   if (!useMemory && redis) {
     await redis.set(`s24:sess:${userId}`, JSON.stringify(s), "EX", ttlSec);
   } else {
     mem.set(userId, s);
     setTimeout(() => mem.delete(userId), ttlSec * 1000).unref?.();
+  }
+}
+
+// ===== Anti-spam storage (fallback memory) =====
+const memCooldown = new Map(); // key: user -> expireAt
+const memDaily    = new Map(); // key: user -> {count, expireAt}
+const memDedup    = new Map(); // key: user:city:zone:service -> expireAt
+
+function nowSec() { return Math.floor(Date.now() / 1000); }
+
+async function getTTL(key) {
+  if (!useMemory && redis) {
+    const ttl = await redis.ttl(key);
+    return ttl; // -2 no key, -1 no expire, >=0 seconds
+  } else {
+    const exp = (memCooldown.get(key) || memDedup.get(key) || (memDaily.get(key)?.expireAt)) || 0;
+    const leftMs = exp - Date.now();
+    return leftMs > 0 ? Math.floor(leftMs / 1000) : -2;
+  }
+}
+
+async function setExp(key, seconds) {
+  if (!useMemory && redis) {
+    // caller must set value separately for redis, here we just expire if exists
+    await redis.expire(key, seconds);
+  } else {
+    // handled in specific setters below
+  }
+}
+
+async function canCreateLead(user, cityId, zone, serviceId) {
+  const cdKey   = `s24:cd:${user}`;
+  const dayKey  = `s24:day:${user}`;
+  const dKey    = `s24:d:${user}:${cityId || "city"}:${zone || "z"}:${serviceId || "srv"}`;
+
+  // Cooldown check
+  if (!useMemory && redis) {
+    const hasCd = await redis.exists(cdKey);
+    if (hasCd) return { ok: false, reason: "cooldown" };
+  } else {
+    const exp = memCooldown.get(user);
+    if (exp && exp > Date.now()) return { ok: false, reason: "cooldown" };
+  }
+
+  // Daily limit check
+  if (!useMemory && redis) {
+    const cnt = parseInt(await redis.get(dayKey) || "0", 10);
+    if (cnt >= DAILY_LIMIT) return { ok: false, reason: "daily" };
+  } else {
+    const d = memDaily.get(user);
+    if (d && d.count >= DAILY_LIMIT && d.expireAt > Date.now()) return { ok: false, reason: "daily" };
+  }
+
+  // Dedup same request check
+  if (!useMemory && redis) {
+    const hasDup = await redis.exists(dKey);
+    if (hasDup) return { ok: false, reason: "dedup" };
+  } else {
+    const exp = memDedup.get(dKey);
+    if (exp && exp > Date.now()) return { ok: false, reason: "dedup" };
+  }
+
+  return { ok: true };
+}
+
+async function recordLead(user, cityId, zone, serviceId) {
+  const cdKey   = `s24:cd:${user}`;
+  const dayKey  = `s24:day:${user}`;
+  const dKey    = `s24:d:${user}:${cityId || "city"}:${zone || "z"}:${serviceId || "srv"}`;
+
+  if (!useMemory && redis) {
+    // cooldown
+    await redis.set(cdKey, "1", "EX", COOLDOWN_MINUTES * 60);
+
+    // daily counter with rolling 24h window
+    const newCnt = await redis.incr(dayKey);
+    if (newCnt === 1) await redis.expire(dayKey, 24 * 60 * 60);
+
+    // dedup per tuple
+    await redis.set(dKey, "1", "EX", DEDUP_HOURS * 60 * 60);
+  } else {
+    // cooldown
+    memCooldown.set(user, Date.now() + COOLDOWN_MINUTES * 60 * 1000);
+    setTimeout(() => memCooldown.delete(user), COOLDOWN_MINUTES * 60 * 1000).unref?.();
+
+    // daily
+    const cur = memDaily.get(user);
+    if (!cur || cur.expireAt <= Date.now()) {
+      const expireAt = Date.now() + 24 * 60 * 60 * 1000;
+      memDaily.set(user, { count: 1, expireAt });
+      setTimeout(() => memDaily.delete(user), expireAt - Date.now()).unref?.();
+    } else {
+      cur.count += 1;
+      memDaily.set(user, cur);
+    }
+
+    // dedup
+    const expAt = Date.now() + DEDUP_HOURS * 60 * 60 * 1000;
+    memDedup.set(dKey, expAt);
+    setTimeout(() => memDedup.delete(dKey), DEDUP_HOURS * 60 * 60 * 1000).unref?.();
   }
 }
 
@@ -230,8 +337,7 @@ function sendZonaConfirm(to, z) {
 // services list
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
-  const consent =
-    "_Al continuar, aceptas que tus datos se compartan con profesionales cercanos y que puedas recibir sus llamadas o mensajes. Sin costo._";
+  const consent = "_Al continuar, aceptas que tus datos se compartan con profesionales cercanos y que puedas recibir sus llamadas o mensajes. Sin costo._";
   return postWA({
     messaging_product: "whatsapp",
     to,
@@ -263,12 +369,12 @@ async function sendLeadReady(to, cityTitle, zone, serviceId) {
     `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\n` +
     `En breve te contactarán profesionales cercanos.\n\nServicio24`;
   await sendText(to, text);
-  return text; // נשמר לשימוש במסך DONE
+  return text; // נחזיר את הטקסט לשימוש חוזר במסך DONE
 }
 
-// ===== Free-text & Lock behavior =====
+// ===== Free-text behavior =====
 async function recoverUI(from, s) {
-  if (s.state === "DONE" || s.locked) {
+  if (s.state === "DONE") {
     const cityTitle = s.city?.title || "Ciudad de Guatemala";
     const svc = s.serviceId || null;
     const final = s.lastConfirmation ||
@@ -306,38 +412,28 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     let s = await sessGet(from);
     if (!s) {
-      s = {
-        city: null, zone: null, zoneConfirmed: false, serviceId: null,
-        started: false, state: "MENU", lastConfirmation: null, locked: false, ts: Date.now()
-      };
+      s = { city: null, zone: null, zoneConfirmed: false, serviceId: null, started: false, state: "MENU", lastConfirmation: null, ts: Date.now() };
       await sessSet(from, s);
     }
 
-    // TEXT: lock-aware
+    // TEXT - לפי ה-state
     if (msg.type === "text") {
-      const txt = (msg.text?.body || "").trim().toLowerCase();
+      const body = (msg.text?.body || "").trim().toLowerCase();
 
-      // מילים שמבצעות reset יזום
-      const RESET_WORDS = new Set(["menu", "nuevo", "reiniciar", "reset", "inicio", "start"]);
-      if (RESET_WORDS.has(txt)) {
-        s = {
-          city: null, zone: null, zoneConfirmed: false, serviceId: null,
-          started: false, state: "MENU", lastConfirmation: null, locked: false, ts: Date.now()
-        };
+      // reset words
+      const RESET = new Set(["menu","nuevo","reiniciar","reset","inicio","start"]);
+      if (RESET.has(body)) {
+        s = { city: null, zone: null, zoneConfirmed: false, serviceId: null, started: false, state: "MENU", lastConfirmation: null, ts: Date.now() };
         await sessSet(from, s);
         await sendStartConfirm(from);
         return res.sendStatus(200);
       }
 
-      if (s.locked || s.state === "DONE") {
-        // אחרי יצירת ליד—לא מחזירים לתפריטים
-        const cityTitle = s.city?.title || "Ciudad de Guatemala";
-        const final = s.lastConfirmation ||
-          `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${cityTitle}.\nEn breve te contactarán profesionales cercanos.\n\nServicio24`;
-        await sendText(from, final);
+      if (s.state === "DONE") {
+        const text = s.lastConfirmation || `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\nEn breve te contactarán profesionales cercanos.\n\nServicio24`;
+        await sendText(from, text);
         return res.sendStatus(200);
       }
-
       await recoverUI(from, s);
       return res.sendStatus(200);
     }
@@ -347,7 +443,7 @@ app.post("/webhook", async (req, res) => {
     if (interactive?.type === "list_reply") {
       const id = interactive.list_reply?.id;
 
-      // ciudad
+      // עיר
       if (CITIES.some(c => c.id === id)) {
         const city = CITIES.find(c => c.id === id);
         s.city = city; s.zone = null; s.zoneConfirmed = false; s.serviceId = null; s.started = true; s.state = "MENU";
@@ -356,7 +452,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // zona exacta
+      // זונה מדויקת
       if (id?.startsWith("zona_")) {
         const z = parseInt(id.split("_")[1], 10);
         if (z >= 1 && z <= 25) {
@@ -367,19 +463,41 @@ app.post("/webhook", async (req, res) => {
         }
       }
 
-      // servicio
+      // שירות
       if (SERVICE_LABEL[id]) {
         if (!s.zoneConfirmed) {
           await sendText(from, "Primero selecciona y confirma tu zona para continuar.");
           await sendZonaGroupButtons(from);
           return res.sendStatus(200);
         }
+
+        // ----- Anti-spam checks before creating a lead -----
+        const cityId = s.city?.id || "city_guatemala";
+        const chk = await canCreateLead(from, cityId, s.zone, id);
+        if (!chk.ok) {
+          if (chk.reason === "cooldown") {
+            await sendText(from, "Tu solicitud reciente está en proceso. Podrás crear otra en aproximadamente 1 hora.");
+          } else if (chk.reason === "dedup") {
+            await sendText(from, "Ya recibimos una solicitud igual recientemente. Inténtalo más tarde.");
+          } else if (chk.reason === "daily") {
+            await sendText(from, "Has alcanzado el límite de solicitudes por hoy. Intenta de nuevo mañana.");
+          } else {
+            await sendText(from, "No es posible crear otra solicitud por el momento.");
+          }
+          return res.sendStatus(200);
+        }
+
+        // יצירת ליד
         s.serviceId = id;
         const cityTitle = s.city?.title || "Ciudad de Guatemala";
         const finalText = await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
+
+        // סימון אחרי יצירה: cooldown + dedup + daily
+        await recordLead(from, cityId, s.zone, s.serviceId);
+
+        // מצב סיום
         s.state = "DONE";
-        s.locked = true;                // 🔒 נועל את ה-session
-        s.lastConfirmation = finalText; // נשמר להצגה חוזרת
+        s.lastConfirmation = finalText;
         await sessSet(from, s);
         return res.sendStatus(200);
       }
@@ -423,8 +541,8 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ===== Health =====
-app.get("/", (_req, res) => res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Full Emojis + Lock)"));
+app.get("/", (_req, res) => res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Full Emojis + Limits)"));
 
 // ===== Start =====
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT} [V2 Barzel Stable + Lock]`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT} [V2 Barzel Stable + Limits]`));
