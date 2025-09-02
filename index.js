@@ -1,9 +1,4 @@
-// index.js — Servicio24 V2 Barzel Stable (Final)
-// - Graph API v${GRAPH_VERSION} corrected
-// - Redis sessions with in-memory fallback
-// - Full emojis for ZONAS and services (word first, emoji after)
-// - Free-text logic: same menu before DONE, final confirmation after DONE
-// - No dotenv (Render reads ENV)
+// index.js — Servicio24 V2 Barzel Stable (Final + Robust Replies)
 
 const express = require("express");
 const axios = require("axios");
@@ -11,8 +6,29 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
+// ----- Minimal request log (עוזר לנו לראות תנועה) -----
+app.use((req, _res, next) => {
+  if (req.path === "/webhook" && req.method === "POST") {
+    try {
+      const entry = req.body?.entry?.[0];
+      const msg = entry?.changes?.[0]?.value?.messages?.[0];
+      console.log("[IN]", new Date().toISOString(), msg ? msg.type : "no-msg");
+    } catch { /* ignore */ }
+  }
+  next();
+});
+
+// ----- Axios error logger -----
+axios.interceptors.response.use(
+  r => r,
+  err => {
+    console.error("[Graph error]", err?.response?.status, err?.response?.data || err.message);
+    return Promise.reject(err);
+  }
+);
+
 // ===== Graph / Auth =====
-const GRAPH_VERSION = process.env.GRAPH_VERSION || "23.0"; // ב-Render הערך 23.0 בלי v
+const GRAPH_VERSION = process.env.GRAPH_VERSION || "23.0";
 const GRAPH_BASE    = `https://graph.facebook.com/v${GRAPH_VERSION}`;
 const GRAPH_URL     = `${GRAPH_BASE}/${process.env.PHONE_NUMBER_ID}/messages`;
 const AUTH = {
@@ -35,11 +51,7 @@ try {
   if (process.env.REDIS_URL) {
     redis = new Redis(process.env.REDIS_URL, { lazyConnect: false, maxRetriesPerRequest: 2 });
     redis.on("connect", () => console.log("[Redis] connected"));
-    redis.on("error", (e) => {
-      console.error("[Redis] error:", e?.message || e);
-      redis = null;
-      useMemory = true;
-    });
+    redis.on("error", (e) => { console.error("[Redis] error:", e?.message || e); redis = null; useMemory = true; });
   } else {
     useMemory = true;
     console.warn("[Redis] REDIS_URL missing - using in-memory sessions");
@@ -90,22 +102,12 @@ const ZONA_EMOJI = {
 function postWA(payload) {
   return axios.post(GRAPH_URL, payload, AUTH);
 }
-
 function sendText(to, text) {
-  return postWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body: text },
-  });
+  return postWA({ messaging_product: "whatsapp", to, type: "text", text: { body: text } });
 }
-
-// pantalla inicial
 function sendStartConfirm(to) {
   return postWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "button",
       header: { type: "text", text: "Servicio24" },
@@ -120,13 +122,9 @@ function sendStartConfirm(to) {
     },
   });
 }
-
-// role
 function sendRoleButtons(to) {
   return postWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "button",
       header: { type: "text", text: "Bienvenido a Servicio24" },
@@ -141,34 +139,21 @@ function sendRoleButtons(to) {
     },
   });
 }
-
-// city list
 function sendCityMenu(to) {
   return postWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "list",
       header: { type: "text", text: "Selecciona tu ciudad" },
       body:   { text: "Elige la ciudad donde necesitas el servicio:" },
       footer: { text: "Servicio24" },
-      action: {
-        button: "Seleccionar ciudad",
-        sections: [
-          { title: "Ciudades", rows: CITIES.map(c => ({ id: c.id, title: c.title })) }
-        ]
-      }
+      action: { button: "Seleccionar ciudad", sections: [{ title: "Ciudades", rows: CITIES.map(c => ({ id: c.id, title: c.title })) }] }
     }
   });
 }
-
-// zona groups
 function sendZonaGroupButtons(to) {
   return postWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "button",
       header: { type: "text", text: "Zonas" },
@@ -184,17 +169,11 @@ function sendZonaGroupButtons(to) {
     }
   });
 }
-
-// zona list exacta
 function sendZonaList(to, start, end) {
   const rows = [];
-  for (let z = start; z <= end; z++) {
-    rows.push({ id: `zona_${z}`, title: `Zona ${z} ${ZONA_EMOJI[z] || ""}` });
-  }
+  for (let z = start; z <= end; z++) rows.push({ id: `zona_${z}`, title: `Zona ${z} ${ZONA_EMOJI[z] || ""}` });
   return postWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "list",
       header: { type: "text", text: `Zonas ${start}-${end}` },
@@ -204,14 +183,10 @@ function sendZonaList(to, start, end) {
     }
   });
 }
-
-// confirm zona
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
   return postWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "button",
       header: { type: "text", text: `Zona seleccionada: ${z} ${emoji}` },
@@ -226,15 +201,11 @@ function sendZonaConfirm(to, z) {
     }
   });
 }
-
-// services list
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   const consent = "_Al continuar, aceptas que tus datos se compartan con profesionales cercanos y que puedas recibir sus llamadas o mensajes. Sin costo._";
   return postWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "list",
       header: { type: "text", text: "Servicios disponibles" },
@@ -242,50 +213,35 @@ function sendServicesList(to, cityTitle, z) {
       footer: { text: "Servicio24" },
       action: {
         button: "Seleccionar servicio",
-        sections: [
-          {
-            title: "Profesionales",
-            rows: SERVICES.map(s => ({ id: s.id, title: `${s.label} ${s.emoji}` }))
-          }
-        ]
+        sections: [{ title: "Profesionales", rows: SERVICES.map(s => ({ id: s.id, title: `${s.label} ${s.emoji}` })) }]
       }
     }
   });
 }
-
-// final lead
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
   const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
   const zoneEmoji = ZONA_EMOJI[zone] || "";
-  const text =
-    `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\n` +
-    `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+  const text = `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\nEn breve te contactarán profesionales cercanos.\n\nServicio24`;
   await sendText(to, text);
-  return text; // נחזיר את הטקסט לשימוש חוזר במסך DONE
+  return text;
 }
 
-// ===== Free-text behavior =====
-// לפני DONE: משחזרים את אותו מסך שבו הוא נמצא
+// ===== Free-text recovery =====
 async function recoverUI(from, s) {
   if (s.state === "DONE") {
-    // אם משום מה הגיע לפה - נאחזיר את הודעת האישוש האחרונה
     const cityTitle = s.city?.title || "Ciudad de Guatemala";
-    const svc = s.serviceId || null;
     const final = s.lastConfirmation ||
-      `Listo ✅  ${(SERVICES.find(x => x.id === svc)?.label || "Profesional")} ${(SERVICES.find(x => x.id === svc)?.emoji || "👤")} • Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${cityTitle}.\nEn breve te contactarán profesionales cercanos.\n\nServicio24`;
+      `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${cityTitle}.\nEn breve te contactarán profesionales cercanos.\n\nServicio24`;
     await sendText(from, final);
     return;
   }
-
-  // לפי המצב נחזיר את אותו התפריט
-  if (!s.started) { await sendStartConfirm(from); return; }
-  if (!s.city) { await sendCityMenu(from); return; }
-  if (!s.zone) { await sendZonaGroupButtons(from); return; }
-  if (!s.zoneConfirmed) { await sendZonaConfirm(from, s.zone); return; }
-  // כאן הוא בשלב בחירת שירותים
+  if (!s.started)         return sendStartConfirm(from);
+  if (!s.city)            return sendCityMenu(from);
+  if (!s.zone)            return sendZonaGroupButtons(from);
+  if (!s.zoneConfirmed)   return sendZonaConfirm(from, s.zone);
   const cityTitle = s.city?.title || "Ciudad de Guatemala";
-  await sendServicesList(from, cityTitle, s.zone);
+  return sendServicesList(from, cityTitle, s.zone);
 }
 
 // ===== Webhook verify =====
@@ -308,16 +264,13 @@ app.post("/webhook", async (req, res) => {
 
     const from = msg.from;
     let s = await sessGet(from);
-    if (!s) {
-      s = { city: null, zone: null, zoneConfirmed: false, serviceId: null, started: false, state: "MENU", lastConfirmation: null };
-      await sessSet(from, s);
-    }
+    if (!s) { s = { city: null, zone: null, zoneConfirmed: false, serviceId: null, started: false, state: "MENU", lastConfirmation: null }; await sessSet(from, s); }
 
-    // TEXT - בכל שלב נטפל לפי ה-state והמסך הנוכחי
+    // 1) TEXT → לפי לוגיקת DONE/תפריט נוכחי
     if (msg.type === "text") {
       if (s.state === "DONE") {
-        // אחרי יצירת ליד - החזר את הודעת הסיכום האחרונה, לא תפריט
-        const text = s.lastConfirmation || `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\nEn breve te contactarán profesionales cercanos.\n\nServicio24`;
+        const text = s.lastConfirmation ||
+          `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\nEn breve te contactarán profesionales cercanos.\n\nServicio24`;
         await sendText(from, text);
         return res.sendStatus(200);
       }
@@ -325,12 +278,12 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
+    // 2) LIST REPLY
     const interactive = msg.interactive;
-
     if (interactive?.type === "list_reply") {
       const id = interactive.list_reply?.id;
 
-      // עיר
+      // City
       if (CITIES.some(c => c.id === id)) {
         const city = CITIES.find(c => c.id === id);
         s.city = city; s.zone = null; s.zoneConfirmed = false; s.serviceId = null; s.started = true; s.state = "MENU";
@@ -339,7 +292,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // זונה מדויקת
+      // Zona exacta
       if (id?.startsWith("zona_")) {
         const z = parseInt(id.split("_")[1], 10);
         if (z >= 1 && z <= 25) {
@@ -350,7 +303,7 @@ app.post("/webhook", async (req, res) => {
         }
       }
 
-      // שירות
+      // Servicio
       if (SERVICE_LABEL[id]) {
         if (!s.zoneConfirmed) {
           await sendText(from, "Primero selecciona y confirma tu zona para continuar.");
@@ -367,37 +320,31 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
+    // 3) BUTTON REPLY
     if (interactive?.type === "button_reply") {
       const id = interactive.button_reply?.id;
 
-      if (id === "start_yes") { s.started = true; s.state = "MENU"; await sessSet(from, s); await sendRoleButtons(from); return res.sendStatus(200); }
-      if (id === "start_no")  { await sendText(from, "Operación cancelada.\n\nServicio24"); return res.sendStatus(200); }
-
-      if (id === "role_cliente") { await sendCityMenu(from); return res.sendStatus(200); }
-      if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción...\n\nServicio24"); return res.sendStatus(200); }
-
+      if (id === "start_yes")     { s.started = true; s.state = "MENU"; await sessSet(from, s); await sendRoleButtons(from); return res.sendStatus(200); }
+      if (id === "start_no")      { await sendText(from, "Operación cancelada.\n\nServicio24"); return res.sendStatus(200); }
+      if (id === "role_cliente")  { await sendCityMenu(from); return res.sendStatus(200); }
+      if (id === "role_tecnico")  { await sendText(from, "La función de *Técnico* está en construcción...\n\nServicio24"); return res.sendStatus(200); }
       if (id === "zona_group_1_10")  { await sendZonaList(from, 1, 10);  return res.sendStatus(200); }
       if (id === "zona_group_11_20") { await sendZonaList(from, 11, 20); return res.sendStatus(200); }
       if (id === "zona_group_21_25") { await sendZonaList(from, 21, 25); return res.sendStatus(200); }
-
-      if (id === "zona_change") { s.state = "MENU"; await sessSet(from, s); await sendZonaGroupButtons(from); return res.sendStatus(200); }
-      if (id === "zona_confirm") {
+      if (id === "zona_change")   { s.state = "MENU"; await sessSet(from, s); await sendZonaGroupButtons(from); return res.sendStatus(200); }
+      if (id === "zona_confirm")  {
         if (!s.zone) { await sendZonaGroupButtons(from); return res.sendStatus(200); }
-        s.zoneConfirmed = true; s.state = "MENU";
-        await sessSet(from, s);
+        s.zoneConfirmed = true; s.state = "MENU"; await sessSet(from, s);
         const cityTitle = s.city?.title || "Ciudad de Guatemala";
         await sendServicesList(from, cityTitle, s.zone);
         return res.sendStatus(200);
       }
     }
 
-    // fallback אם עדיין אין עיר
-    if (!s.city) {
-      await sendCityMenu(from);
-      return res.sendStatus(200);
-    }
-
+    // 4) UNIVERSAL FALLBACK — עונה תמיד גם אם זה תמונה/אודיו/סטיקר/וכו'
+    await recoverUI(from, s);
     return res.sendStatus(200);
+
   } catch (err) {
     console.error("Webhook POST error:", err?.response?.data || err.message);
     return res.sendStatus(200);
