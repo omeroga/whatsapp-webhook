@@ -8,8 +8,8 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-const GRAPH_VERSION = process.env.GRAPH_VERSION || "v20.0";
-const GRAPH_URL = `https://graph.facebook.com/${GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
+const GRAPH_VERSION = process.env.GRAPH_VERSION || "23.0";
+const GRAPH_URL     = `https://graph.facebook.com/v${GRAPH_VERSION}`;
 const AUTH = {
   headers: {
     Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
