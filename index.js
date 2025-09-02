@@ -1,15 +1,24 @@
-// index.js — V2 Barzel (Stable UX) + Redis sessions + Free-text routing
-// בלי שינויי UX: אותן מסכים, אותם אימוג׳ים לזונות ולשירותים (המילה ואז האימוג׳י)
+// index.js — Servicio24 V2 Barzel Stable (Full Final)
+// ---------------------------------------------------
+// מה בקובץ:
+// - טעינת ENV + בדיקות משתנים קריטיים
+// - חיבור Redis לניהול סשנים (עם fallback לזיכרון אם אין/נופל)
+// - Graph API עם v${GRAPH_VERSION} ב־URL (ברירת מחדל 23.0)
+// - כל אימוג׳י הזונות חזרה אחד לאחד
+// - אימוג׳י בעלי מקצוע מימין לשם
+// - ניתוב טקסט חופשי למסך הבא הלוגי
+// - נקודת בריאות "/" להבטחת דיפלוי תקין
 
+require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 
-// ---------- Config ----------
 const app = express();
 app.use(express.json());
 
-const GRAPH_VERSION = process.env.GRAPH_VERSION || "23.0";
-const GRAPH_URL     = `https://graph.facebook.com/v${GRAPH_VERSION}`;
+// ===== Graph API config =====
+const GRAPH_VERSION = process.env.GRAPH_VERSION || "23.0"; // ב־Render הערך צריך להיות 23.0 ללא האות v
+const GRAPH_URL = `https://graph.facebook.com/v${GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
 const AUTH = {
   headers: {
     Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
@@ -17,23 +26,35 @@ const AUTH = {
   },
 };
 
-// ---------- Redis session store (fallback לזיכרון אם אין/שגיאה) ----------
+// ===== Env sanity =====
+if (!process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) {
+  console.error("❌ Missing env: WHATSAPP_TOKEN or PHONE_NUMBER_ID");
+  process.exit(1);
+}
+
+// ===== Redis session store (fallback to memory) =====
 let redis = null;
 let useMemory = false;
 try {
   const Redis = require("ioredis");
   if (process.env.REDIS_URL) {
     redis = new Redis(process.env.REDIS_URL, { lazyConnect: false, maxRetriesPerRequest: 2 });
-    redis.on("error", (e) => console.error("[Redis] error:", e?.message || e));
-    console.log("[Redis] connected");
+    redis.on("connect", () => console.log("[Redis] connected"));
+    redis.on("error", (e) => {
+      console.error("[Redis] error:", e?.message || e);
+      // נופלים חזרה לזיכרון - לא מפילים שרת
+      redis = null;
+      useMemory = true;
+    });
   } else {
     useMemory = true;
-    console.warn("[Redis] REDIS_URL missing — using in-memory sessions");
+    console.warn("[Redis] REDIS_URL missing - using in-memory sessions");
   }
 } catch {
   useMemory = true;
-  console.warn("[Redis] ioredis not available — using in-memory sessions");
+  console.warn("[Redis] ioredis not available - using in-memory sessions");
 }
+
 const mem = new Map();
 async function sessGet(userId) {
   if (!useMemory && redis) {
@@ -51,7 +72,7 @@ async function sessSet(userId, s, ttlSec = 60 * 60 * 6) {
   }
 }
 
-// ---------- Datos LOCKED ----------
+// ===== Datos LOCKED =====
 const CITIES = [{ id: "city_guatemala", title: "Ciudad de Guatemala" }];
 
 const SERVICES = [
@@ -71,16 +92,25 @@ const ZONA_EMOJI = {
   21:"🚧",22:"📦",23:"🚋",24:"🏗️",25:"🌳"
 };
 
-// ---------- Senders (כמו V2 ברזל) ----------
+// ===== Senders - זהה לברזל המקורי עם עדכוני יציבות בלבד =====
+function postWA(payload) {
+  return axios.post(GRAPH_URL, payload, AUTH);
+}
+
 function sendText(to, text) {
-  return axios.post(GRAPH_URL, {
-    messaging_product: "whatsapp", to, type: "text", text: { body: text }
-  }, AUTH);
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: { body: text },
+  });
 }
 
 function sendStartConfirm(to) {
-  return axios.post(GRAPH_URL, {
-    messaging_product: "whatsapp", to, type: "interactive",
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
     interactive: {
       type: "button",
       header: { type: "text", text: "Servicio24" },
@@ -93,12 +123,14 @@ function sendStartConfirm(to) {
         ],
       },
     },
-  }, AUTH);
+  });
 }
 
 function sendRoleButtons(to) {
-  return axios.post(GRAPH_URL, {
-    messaging_product: "whatsapp", to, type: "interactive",
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
     interactive: {
       type: "button",
       header: { type: "text", text: "Bienvenido a Servicio24" },
@@ -111,12 +143,14 @@ function sendRoleButtons(to) {
         ],
       },
     },
-  }, AUTH);
+  });
 }
 
 function sendCityMenu(to) {
-  return axios.post(GRAPH_URL, {
-    messaging_product: "whatsapp", to, type: "interactive",
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
     interactive: {
       type: "list",
       header: { type: "text", text: "Selecciona tu ciudad" },
@@ -124,15 +158,19 @@ function sendCityMenu(to) {
       footer: { text: "Servicio24" },
       action: {
         button: "Seleccionar ciudad",
-        sections: [{ title: "Ciudades", rows: CITIES.map(c => ({ id: c.id, title: c.title })) }]
+        sections: [
+          { title: "Ciudades", rows: CITIES.map(c => ({ id: c.id, title: c.title })) }
+        ]
       }
     }
-  }, AUTH);
+  });
 }
 
 function sendZonaGroupButtons(to) {
-  return axios.post(GRAPH_URL, {
-    messaging_product: "whatsapp", to, type: "interactive",
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
     interactive: {
       type: "button",
       header: { type: "text", text: "Zonas" },
@@ -146,16 +184,18 @@ function sendZonaGroupButtons(to) {
         ]
       }
     }
-  }, AUTH);
+  });
 }
 
 function sendZonaList(to, start, end) {
   const rows = [];
   for (let z = start; z <= end; z++) {
-    rows.push({ id: `zona_${z}`, title: `Zona ${z} ${ZONA_EMOJI[z] || ""}` }); // מילה ואז האימוג׳י הייחודי לאותה זונה
+    rows.push({ id: `zona_${z}`, title: `Zona ${z} ${ZONA_EMOJI[z] || ""}` }); // מילה ואז אימוג׳י ייחודי לכל זונה
   }
-  return axios.post(GRAPH_URL, {
-    messaging_product: "whatsapp", to, type: "interactive",
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
     interactive: {
       type: "list",
       header: { type: "text", text: `Zonas ${start}-${end}` },
@@ -163,16 +203,18 @@ function sendZonaList(to, start, end) {
       footer: { text: "Servicio24" },
       action: { button: "Seleccionar zona", sections: [{ title: "Zonas", rows }] }
     }
-  }, AUTH);
+  });
 }
 
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
-  return axios.post(GRAPH_URL, {
-    messaging_product: "whatsapp", to, type: "interactive",
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
     interactive: {
       type: "button",
-      header: { type: "text", text: `Zona seleccionada: ${z} ${emoji}` }, // בלי "(bloqueada)"
+      header: { type: "text", text: `Zona seleccionada: ${z} ${emoji}` }, // אין "(bloqueada)"
       body:   { text: "¿Desea continuar con esta zona?" },
       footer: { text: "Servicio24" },
       action: {
@@ -182,14 +224,16 @@ function sendZonaConfirm(to, z) {
         ]
       }
     }
-  }, AUTH);
+  });
 }
 
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   const consent = "_Al continuar, aceptas recibir llamadas y mensajes de profesionales. Sin costo._";
-  return axios.post(GRAPH_URL, {
-    messaging_product: "whatsapp", to, type: "interactive",
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
     interactive: {
       type: "list",
       header: { type: "text", text: "Servicios disponibles" },
@@ -203,7 +247,7 @@ function sendServicesList(to, cityTitle, z) {
         }]
       }
     }
-  }, AUTH);
+  });
 }
 
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
@@ -216,7 +260,7 @@ async function sendLeadReady(to, cityTitle, zone, serviceId) {
   await sendText(to, text);
 }
 
-// ---------- Free-text HOTFIX (כמו שסיכמנו) ----------
+// ===== Free-text routing - כמו שסיכמנו =====
 async function routeFreeText(from, s) {
   if (!s.started) { await sendStartConfirm(from); return; }
   if (s.zoneConfirmed) {
@@ -229,10 +273,21 @@ async function routeFreeText(from, s) {
   await sendCityMenu(from);
 }
 
-// ---------- Webhook ----------
+// ===== Webhook =====
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) return res.status(200).send(challenge);
+  return res.sendStatus(403);
+});
+
 app.post("/webhook", async (req, res) => {
   try {
-    const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const msg = value?.messages?.[0];
     if (!msg) return res.sendStatus(200);
 
     const from = msg.from;
@@ -324,16 +379,8 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ---------- Verify + Health ----------
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) return res.status(200).send(challenge);
-  return res.sendStatus(403);
-});
-
-app.get("/", (_req, res) => res.status(200).send("Servicio24 — V2 Barzel Stable (Redis + Full Emojis)"));
+// ===== Health =====
+app.get("/", (_req, res) => res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Full Emojis)"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT} [V2 Barzel Stable]`));
