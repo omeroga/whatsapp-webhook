@@ -1,8 +1,9 @@
-// index.js — Servicio24 V2 Barzel Stable (Final)
+// index.js - Servicio24 V2 Barzel Stable (Final)
 // - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
 // - Free-text flow + cooldown + magic reset
+// - Idempotency for duplicate WhatsApp deliveries
 // - No dotenv (Render injects env)
 
 const express = require("express");
@@ -46,11 +47,11 @@ try {
     });
   } else {
     useMemory = true;
-    console.warn("[Redis] REDIS_URL missing — using in-memory sessions");
+    console.warn("[Redis] REDIS_URL missing - using in-memory sessions");
   }
 } catch {
   useMemory = true;
-  console.warn("[Redis] ioredis not available — using in-memory sessions");
+  console.warn("[Redis] ioredis not available - using in-memory sessions");
 }
 
 const mem = new Map(); // session store
@@ -97,6 +98,23 @@ async function coolDel(userId) {
   const key = `s24:cool:${userId}`;
   if (!useMemory && redis) await redis.del(key);
   memKeys.delete(key);
+}
+
+// ===== Idempotency - ignore duplicate WhatsApp deliveries =====
+const seenInMem = new Set();
+async function alreadyHandled(msgId, ttlSec = 60 * 60 * 24) {
+  const key = `s24:seen:${msgId}`;
+  if (!useMemory && redis) {
+    const exists = await redis.get(key);
+    if (exists) return true;
+    await redis.set(key, "1", "EX", ttlSec);
+    return false;
+  } else {
+    if (seenInMem.has(key)) return true;
+    seenInMem.add(key);
+    setTimeout(() => seenInMem.delete(key), ttlSec * 1000).unref?.();
+    return false;
+  }
 }
 
 // ===== Static data =====
@@ -302,6 +320,11 @@ app.post("/webhook", async (req, res) => {
     const msg    = value?.messages?.[0];
     if (!msg) return res.sendStatus(200);
 
+    // Idempotency guard
+    if (await alreadyHandled(msg.id)) {
+      return res.sendStatus(200);
+    }
+
     const from = msg.from;
 
     // ensure session
@@ -311,7 +334,7 @@ app.post("/webhook", async (req, res) => {
       await sessSet(from, s);
     }
 
-    // --- MAGIC RESET: works anytime, clears cooldown too ---
+    // MAGIC RESET - works anytime, clears cooldown too
     if (msg.type === "text") {
       const body = (msg.text?.body || "").trim().toLowerCase();
       if (body === RESET_MAGIC) {
@@ -324,7 +347,7 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // --- DONE state handling with cooldown ---
+    // DONE state handling with cooldown
     if (s.state === "DONE") {
       if (await coolHas(from)) {
         const fallback =
@@ -335,7 +358,7 @@ app.post("/webhook", async (req, res) => {
         await sendText(from, fallback);
         return res.sendStatus(200);
       } else {
-        // cooldown expired → start a fresh flow
+        // cooldown expired -> start a fresh flow
         await sessDel(from);
         const fresh = { city:null, zone:null, zoneConfirmed:false, serviceId:null, started:false, state:"MENU", lastConfirmation:null };
         await sessSet(from, fresh);
@@ -344,7 +367,7 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // --- Regular text (no magic) → show current UI ---
+    // Regular text (no magic) -> show current UI
     if (msg.type === "text") {
       await recoverUI(from, s);
       return res.sendStatus(200);
@@ -431,7 +454,7 @@ app.post("/webhook", async (req, res) => {
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Full Emojis + Cooldown + Reset)"),
+  res.status(200).send("🚀 Servicio24 - V2 Barzel Stable (Redis + Full Emojis + Cooldown + Reset + Idempotency)"),
 );
 
 // ===== Start =====
