@@ -1,136 +1,59 @@
-// index.js
-// === Servicio24: V2 ברזל — יציב לעומסים (Redis + Idempotency + Retries) ===
-// UX נשאר זהה ל-V2 ברזל: Start -> Role -> City -> ZonaGroup -> ZonaExacta -> Confirmar -> Servicios -> Lead
-// שיפורי יציבות פנימיים בלבד: ניהול סשן ב-Redis, מניעת כפילויות מה-Webhook, נעילת Confirmar, retries ל-WhatsApp, תור לידים.
-
-/* Servicios (LOCKED, שם ולאחריו אימוג'י):
-Plomero 🚰 | Electricista ⚡ | Cerrajero 🔑 | Aire acondicionado ❄️ | Mecánico 🛠️ | Servicio de grúa 🛻 | Mudanza 🚚
-Zonas 1-25 (LOCKED):
-1 🏛️ | 2 🍺 | 3 🕊️ | 4 💰 | 5 🏟️ | 6 🏘️ | 7 🏺 | 8 🚌 | 9 🏨 | 10 🎉 |
-11 🛒 | 12 🧰 | 13 ✈️ | 14 🏢 | 15 🎓 | 16 🏰 | 17 🏭 | 18 🛣️ | 19 🔧 | 20 🏚️ |
-21 🚧 | 22 📦 | 23 🚋 | 24 🏗️ | 25 🌳
-*/
+// index.js — V2 Barzel (Stable UX) + Redis sessions + Free-text routing
+// בלי שינויי UX: אותן מסכים, אותם אימוג׳ים לזונות ולשירותים (המילה ואז האימוג׳י)
 
 const express = require("express");
 const axios = require("axios");
-const Redis = require("ioredis");
 
+// ---------- Config ----------
 const app = express();
 app.use(express.json());
 
-// ---------------- Env & Infra ----------------
-const GRAPH_URL = `https://graph.facebook.com/v${process.env.GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const REDIS_URL = process.env.REDIS_URL || ""; // eg: redis://localhost:6379
-const USE_REDIS = !!REDIS_URL;
-
-const redis = USE_REDIS ? new Redis(REDIS_URL, { lazyConnect: false, maxRetriesPerRequest: 2 }) : null;
-
-// Axios instance עם timeout
-const http = axios.create({
-  timeout: 10000,
+const GRAPH_VERSION = process.env.GRAPH_VERSION || "v20.0";
+const GRAPH_URL = `https://graph.facebook.com/${GRAPH_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
+const AUTH = {
   headers: {
-    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+    Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
     "Content-Type": "application/json",
   },
-});
+};
 
-// שליחה ל-Graph עם נסיונות חוזרים
-async function postGraph(payload, tries = 3) {
-  let attempt = 0, lastErr;
-  const backoff = [300, 800, 1500];
-  while (attempt < tries) {
-    try {
-      return await http.post(GRAPH_URL, payload);
-    } catch (e) {
-      lastErr = e;
-      const wait = backoff[attempt] || 1500;
-      await new Promise(r => setTimeout(r, wait));
-      attempt++;
-    }
-  }
-  console.error("Graph POST failed:", lastErr?.response?.data || lastErr?.message);
-  throw lastErr;
-}
-
-// ---------------- State & Idempotency ----------------
-const SESSION_TTL_SECONDS = 30 * 60;
-const memSessions = new Map();
-const processedMsgMem = new Set();
-const lastConfirmMem = new Map();
-
-// Session helpers
-async function getSession(userId) {
-  if (USE_REDIS) {
-    const raw = await redis.get(`s24:session:${userId}`);
-    if (raw) return JSON.parse(raw);
-  } else if (memSessions.has(userId)) {
-    return memSessions.get(userId);
-  }
-  return {
-    city: null,
-    zone: null,
-    zoneConfirmed: false,
-    serviceId: null,
-    lastWelcome: 0,
-    started: false,
-  };
-}
-async function saveSession(userId, s) {
-  if (USE_REDIS) {
-    await redis.set(`s24:session:${userId}`, JSON.stringify(s), "EX", SESSION_TTL_SECONDS);
+// ---------- Redis session store (fallback לזיכרון אם אין/שגיאה) ----------
+let redis = null;
+let useMemory = false;
+try {
+  const Redis = require("ioredis");
+  if (process.env.REDIS_URL) {
+    redis = new Redis(process.env.REDIS_URL, { lazyConnect: false, maxRetriesPerRequest: 2 });
+    redis.on("error", (e) => console.error("[Redis] error:", e?.message || e));
+    console.log("[Redis] connected");
   } else {
-    memSessions.set(userId, s);
+    useMemory = true;
+    console.warn("[Redis] REDIS_URL missing — using in-memory sessions");
   }
+} catch {
+  useMemory = true;
+  console.warn("[Redis] ioredis not available — using in-memory sessions");
 }
-
-// Idempotency for webhook messages
-async function isDuplicateMessage(messageId) {
-  if (!messageId) return false; // אם אין ID נמשיך כרגיל
-  if (USE_REDIS) {
-    const ok = await redis.set(`s24:msg:${messageId}`, "1", "NX", "EX", 24 * 60 * 60);
-    return ok === null; // קיים כבר
+const mem = new Map();
+async function sessGet(userId) {
+  if (!useMemory && redis) {
+    const raw = await redis.get(`s24:sess:${userId}`);
+    return raw ? JSON.parse(raw) : null;
+  }
+  return mem.get(userId) || null;
+}
+async function sessSet(userId, s, ttlSec = 60 * 60 * 6) {
+  if (!useMemory && redis) {
+    await redis.set(`s24:sess:${userId}`, JSON.stringify(s), "EX", ttlSec);
   } else {
-    if (processedMsgMem.has(messageId)) return true;
-    processedMsgMem.add(messageId);
-    setTimeout(() => processedMsgMem.delete(messageId), 24 * 60 * 60 * 1000);
-    return false;
+    mem.set(userId, s);
+    setTimeout(() => mem.delete(userId), ttlSec * 1000).unref?.();
   }
 }
 
-// Confirm lock - נגד לחיצות כפולות וגם נגד שידור כפול
-async function acquireConfirmLock(userId, ttlSeconds = 3) {
-  if (USE_REDIS) {
-    const ok = await redis.set(`s24:lock:confirm:${userId}`, "1", "NX", "EX", ttlSeconds);
-    return ok !== null;
-  } else {
-    const now = Date.now();
-    const last = lastConfirmMem.get(userId) ?? 0;
-    if (now - last < ttlSeconds * 1000) return false;
-    lastConfirmMem.set(userId, now);
-    return true;
-  }
-}
-
-// Lead queue - דוחפים לתור ב-Redis לצרכן חיצוני
-async function enqueueLead(lead) {
-  if (USE_REDIS) {
-    const key = `s24:lead:dedupe:${lead.user}:${lead.city}:${lead.zone}:${lead.service}`;
-    // חלון דה-דופ 60 שניות
-    const ok = await redis.set(key, "1", "NX", "EX", 60);
-    if (ok !== null) {
-      await redis.rpush("s24:lead_queue", JSON.stringify(lead));
-    }
-  } else {
-    // Fallback זיכרון - לא יציב לייצור, אבל לא משנה UX
-    console.log("enqueueLead(mem):", lead);
-  }
-}
-
-// ---------------- Datos LOCKED ----------------
+// ---------- Datos LOCKED ----------
 const CITIES = [{ id: "city_guatemala", title: "Ciudad de Guatemala" }];
 
-// טבלת ברזל לבעלי מקצוע - שם ואימוג'י, האימוג'י מוצג מימין לשם
 const SERVICES = [
   { id: "srv_plomero",      label: "Plomero",            emoji: "🚰" },
   { id: "srv_electricista", label: "Electricista",       emoji: "⚡" },
@@ -148,20 +71,16 @@ const ZONA_EMOJI = {
   21:"🚧",22:"📦",23:"🚋",24:"🏗️",25:"🌳"
 };
 
-// ---------------- Send helpers (עם retries) ----------------
+// ---------- Senders (כמו V2 ברזל) ----------
 function sendText(to, text) {
-  return postGraph({
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body: text },
-  });
+  return axios.post(GRAPH_URL, {
+    messaging_product: "whatsapp", to, type: "text", text: { body: text }
+  }, AUTH);
 }
+
 function sendStartConfirm(to) {
-  return postGraph({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+  return axios.post(GRAPH_URL, {
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "button",
       header: { type: "text", text: "Servicio24" },
@@ -174,13 +93,12 @@ function sendStartConfirm(to) {
         ],
       },
     },
-  });
+  }, AUTH);
 }
+
 function sendRoleButtons(to) {
-  return postGraph({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+  return axios.post(GRAPH_URL, {
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "button",
       header: { type: "text", text: "Bienvenido a Servicio24" },
@@ -193,13 +111,12 @@ function sendRoleButtons(to) {
         ],
       },
     },
-  });
+  }, AUTH);
 }
+
 function sendCityMenu(to) {
-  return postGraph({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+  return axios.post(GRAPH_URL, {
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "list",
       header: { type: "text", text: "Selecciona tu ciudad" },
@@ -207,16 +124,15 @@ function sendCityMenu(to) {
       footer: { text: "Servicio24" },
       action: {
         button: "Seleccionar ciudad",
-        sections: [{ title: "Ciudades", rows: CITIES.map(c => ({ id: c.id, title: c.title })) }],
-      },
-    },
-  });
+        sections: [{ title: "Ciudades", rows: CITIES.map(c => ({ id: c.id, title: c.title })) }]
+      }
+    }
+  }, AUTH);
 }
+
 function sendZonaGroupButtons(to) {
-  return postGraph({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+  return axios.post(GRAPH_URL, {
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "button",
       header: { type: "text", text: "Zonas" },
@@ -227,56 +143,53 @@ function sendZonaGroupButtons(to) {
           { type: "reply", reply: { id: "zona_group_1_10",  title: "Zonas 1-10" } },
           { type: "reply", reply: { id: "zona_group_11_20", title: "Zonas 11-20" } },
           { type: "reply", reply: { id: "zona_group_21_25", title: "Zonas 21-25" } },
-        ],
-      },
-    },
-  });
+        ]
+      }
+    }
+  }, AUTH);
 }
+
 function sendZonaList(to, start, end) {
   const rows = [];
   for (let z = start; z <= end; z++) {
-    rows.push({ id: `zona_${z}`, title: `Zona ${z} ${ZONA_EMOJI[z] || ""}` });
+    rows.push({ id: `zona_${z}`, title: `Zona ${z} ${ZONA_EMOJI[z] || ""}` }); // מילה ואז האימוג׳י הייחודי לאותה זונה
   }
-  return postGraph({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+  return axios.post(GRAPH_URL, {
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "list",
       header: { type: "text", text: `Zonas ${start}-${end}` },
       body:   { text: "Selecciona tu zona exacta:" },
       footer: { text: "Servicio24" },
-      action: { button: "Seleccionar zona", sections: [{ title: "Zonas", rows }] },
-    },
-  });
+      action: { button: "Seleccionar zona", sections: [{ title: "Zonas", rows }] }
+    }
+  }, AUTH);
 }
+
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
-  return postGraph({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+  return axios.post(GRAPH_URL, {
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "button",
-      header: { type: "text", text: `Zona seleccionada: ${z} ${emoji}` },
+      header: { type: "text", text: `Zona seleccionada: ${z} ${emoji}` }, // בלי "(bloqueada)"
       body:   { text: "¿Desea continuar con esta zona?" },
       footer: { text: "Servicio24" },
       action: {
         buttons: [
           { type: "reply", reply: { id: "zona_confirm", title: "Confirmar" } },
           { type: "reply", reply: { id: "zona_change",  title: "Cambiar zona" } },
-        ],
-      },
-    },
-  });
+        ]
+      }
+    }
+  }, AUTH);
 }
+
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   const consent = "_Al continuar, aceptas recibir llamadas y mensajes de profesionales. Sin costo._";
-  return postGraph({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
+  return axios.post(GRAPH_URL, {
+    messaging_product: "whatsapp", to, type: "interactive",
     interactive: {
       type: "list",
       header: { type: "text", text: "Servicios disponibles" },
@@ -284,168 +197,124 @@ function sendServicesList(to, cityTitle, z) {
       footer: { text: "Servicio24" },
       action: {
         button: "Seleccionar servicio",
-        sections: [
-          {
-            title: "Profesionales",
-            rows: SERVICES.map(s => ({ id: s.id, title: `${s.label} ${s.emoji}` })),
-          },
-        ],
-      },
-    },
-  });
+        sections: [{
+          title: "Profesionales",
+          rows: SERVICES.map(s => ({ id: s.id, title: `${s.label} ${s.emoji}` })) // מילה ואז אימוג׳י
+        }]
+      }
+    }
+  }, AUTH);
 }
-async function sendLeadReady(to, cityTitle, zone, serviceId, user) {
-  const s = SERVICES.find(x => x.id === serviceId);
-  const serviceText = s ? `${s.label} ${s.emoji}` : "Profesional 👤";
+
+async function sendLeadReady(to, cityTitle, zone, serviceId) {
+  const svc = SERVICES.find(s => s.id === serviceId);
+  const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
   const zoneEmoji = ZONA_EMOJI[zone] || "";
-
-  // דחיפת ליד לתור - לצרכן חיצוני (ואידמפוטנציה ל-60 שניות)
-  await enqueueLead({
-    user,
-    city: cityTitle,
-    zone,
-    service: serviceId,
-    ts: Date.now(),
-  });
-
-  await sendText(
-    to,
+  const text =
     `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\n` +
-    `En breve te contactarán profesionales cercanos.\n\nServicio24`
-  );
+    `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+  await sendText(to, text);
 }
 
-// ---------------- Webhook ----------------
+// ---------- Free-text HOTFIX (כמו שסיכמנו) ----------
+async function routeFreeText(from, s) {
+  if (!s.started) { await sendStartConfirm(from); return; }
+  if (s.zoneConfirmed) {
+    const cityTitle = s.city?.title || "Ciudad de Guatemala";
+    await sendServicesList(from, cityTitle, s.zone);
+    return;
+  }
+  if (typeof s.zone === "number") { await sendZonaConfirm(from, s.zone); return; }
+  if (s.city) { await sendZonaGroupButtons(from); return; }
+  await sendCityMenu(from);
+}
+
+// ---------- Webhook ----------
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-    const messages = value?.messages;
+    const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (!msg) return res.sendStatus(200);
 
-    if (Array.isArray(messages) && messages.length) {
-      for (const msg of messages) {
-        const from = msg.from;
-        const messageId = msg.id || msg?.button?.payload || `${from}:${Date.now()}`; // גיבוי זהיר
+    const from = msg.from;
+    let s = await sessGet(from);
+    if (!s) {
+      s = { city: null, zone: null, zoneConfirmed: false, serviceId: null, lastWelcome: 0, started: false };
+      await sessSet(from, s);
+    }
 
-        // סינון כפילויות מה-Webhook
-        const dup = await isDuplicateMessage(messageId);
-        if (dup) {
-          continue;
-        }
+    if (msg.type === "text") {
+      await routeFreeText(from, s);
+      return res.sendStatus(200);
+    }
 
-        // שליפת סשן
-        let s = await getSession(from);
+    const interactive = msg.interactive;
 
-        // FREE-TEXT: מחזיר למסך הבא הלוגי בלי reset ל-Role
-        if (msg.type === "text") {
-          if (!s.started) { await sendStartConfirm(from); continue; }
-          const now = Date.now();
-          if (!s.lastWelcome || now - s.lastWelcome > SESSION_TTL_SECONDS * 1000) {
-            s.lastWelcome = now;
-            await saveSession(from, s);
-          }
-          if (s.zoneConfirmed) {
-            const cityTitle = s.city?.title || "Ciudad de Guatemala";
-            await sendServicesList(from, cityTitle, s.zone);
-            continue;
-          }
-          if (typeof s.zone === "number") { await sendZonaConfirm(from, s.zone); continue; }
-          if (s.city) { await sendZonaGroupButtons(from); continue; }
-          await sendCityMenu(from);
-          continue;
-        }
+    if (interactive?.type === "list_reply") {
+      const id = interactive.list_reply?.id;
 
-        const interactive = msg.interactive;
+      // CITY
+      if (CITIES.some(c => c.id === id)) {
+        const city = CITIES.find(c => c.id === id);
+        s.city = city; s.zone = null; s.zoneConfirmed = false; s.serviceId = null;
+        await sessSet(from, s);
+        await sendZonaGroupButtons(from);
+        return res.sendStatus(200);
+      }
 
-        // LIST_REPLY
-        if (interactive?.type === "list_reply") {
-          const id = interactive.list_reply?.id;
-
-          // Ciudad
-          if (CITIES.some(c => c.id === id)) {
-            const city = CITIES.find(c => c.id === id);
-            s.city = city; s.zone = null; s.zoneConfirmed = false; s.serviceId = null;
-            await saveSession(from, s);
-            console.log("city_selected", { from, city: city.title });
-            await sendZonaGroupButtons(from);
-            continue;
-          }
-
-          // Zona exacta
-          if (id?.startsWith("zona_")) {
-            const z = parseInt(id.split("_")[1], 10);
-            if (z >= 1 && z <= 25) {
-              s.zone = z; s.zoneConfirmed = false;
-              await saveSession(from, s);
-              console.log("zone_selected", { from, zone: z });
-              await sendZonaConfirm(from, z);
-              continue;
-            }
-          }
-
-          // Servicio
-          if (SERVICE_LABEL[id]) {
-            if (!s.zoneConfirmed) {
-              await sendText(from, "Primero selecciona y confirma tu zona para continuar.");
-              await sendZonaGroupButtons(from);
-              continue;
-            }
-            s.serviceId = id;
-            await saveSession(from, s);
-            const cityTitle = s.city?.title || "Ciudad de Guatemala";
-            console.log("service_selected", { from, serviceId: id });
-            await sendLeadReady(from, cityTitle, s.zone, s.serviceId, from);
-            continue;
-          }
-        }
-
-        // BUTTON_REPLY
-        if (interactive?.type === "button_reply") {
-          const id = interactive.button_reply?.id;
-
-          // Inicio
-          if (id === "start_yes") {
-            s.started = true;
-            await saveSession(from, s);
-            await sendRoleButtons(from);
-            continue;
-          }
-          if (id === "start_no")  {
-            await sendText(from, "Operación cancelada.\n\nServicio24");
-            continue;
-          }
-
-          // Rol
-          if (id === "role_cliente") { await sendCityMenu(from); continue; }
-          if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción...\n\nServicio24"); continue; }
-
-          // Grupos de zona
-          if (id === "zona_group_1_10")  { await sendZonaList(from, 1, 10);  continue; }
-          if (id === "zona_group_11_20") { await sendZonaList(from, 11, 20); continue; }
-          if (id === "zona_group_21_25") { await sendZonaList(from, 21, 25); continue; }
-
-          // Cambio o confirmación de zona
-          if (id === "zona_change") { await sendZonaGroupButtons(from); continue; }
-          if (id === "zona_confirm") {
-            if (typeof s.zone !== "number") { await sendZonaGroupButtons(from); continue; }
-            const gotLock = await acquireConfirmLock(from, 3);
-            if (!gotLock) { continue; }
-            s.zoneConfirmed = true;
-            await saveSession(from, s);
-            const cityTitle = s.city?.title || "Ciudad de Guatemala";
-            console.log("zone_confirmed", { from, zone: s.zone });
-            await sendServicesList(from, cityTitle, s.zone);
-            continue;
-          }
-        }
-
-        // Fallback אם עדיין אין עיר
-        if (!s.city) {
-          await sendCityMenu(from);
-          continue;
+      // ZONA exacta
+      if (id?.startsWith("zona_")) {
+        const z = parseInt(id.split("_")[1], 10);
+        if (z >= 1 && z <= 25) {
+          s.zone = z; s.zoneConfirmed = false;
+          await sessSet(from, s);
+          await sendZonaConfirm(from, z);
+          return res.sendStatus(200);
         }
       }
+
+      // SERVICIO
+      if (SERVICE_LABEL[id]) {
+        if (!s.zoneConfirmed) {
+          await sendText(from, "Primero selecciona y confirma tu zona para continuar.");
+          await sendZonaGroupButtons(from);
+          return res.sendStatus(200);
+        }
+        s.serviceId = id;
+        await sessSet(from, s);
+        const cityTitle = s.city?.title || "Ciudad de Guatemala";
+        await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
+        return res.sendStatus(200);
+      }
+    }
+
+    if (interactive?.type === "button_reply") {
+      const id = interactive.button_reply?.id;
+
+      if (id === "start_yes") { s.started = true; await sessSet(from, s); await sendRoleButtons(from); return res.sendStatus(200); }
+      if (id === "start_no")  { await sendText(from, "Operación cancelada.\n\nServicio24"); return res.sendStatus(200); }
+
+      if (id === "role_cliente") { await sendCityMenu(from); return res.sendStatus(200); }
+      if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción...\n\nServicio24"); return res.sendStatus(200); }
+
+      if (id === "zona_group_1_10")  { await sendZonaList(from, 1, 10);  return res.sendStatus(200); }
+      if (id === "zona_group_11_20") { await sendZonaList(from, 11, 20); return res.sendStatus(200); }
+      if (id === "zona_group_21_25") { await sendZonaList(from, 21, 25); return res.sendStatus(200); }
+
+      if (id === "zona_change") { await sendZonaGroupButtons(from); return res.sendStatus(200); }
+      if (id === "zona_confirm") {
+        if (!s.zone) { await sendZonaGroupButtons(from); return res.sendStatus(200); }
+        s.zoneConfirmed = true;
+        await sessSet(from, s);
+        const cityTitle = s.city?.title || "Ciudad de Guatemala";
+        await sendServicesList(from, cityTitle, s.zone);
+        return res.sendStatus(200);
+      }
+    }
+
+    // fallback אם עדיין אין עיר
+    if (!s.city) {
+      await sendCityMenu(from);
+      return res.sendStatus(200);
     }
 
     return res.sendStatus(200);
@@ -455,6 +324,16 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ---------------- Server ----------------
+// ---------- Verify + Health ----------
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) return res.status(200).send(challenge);
+  return res.sendStatus(403);
+});
+
+app.get("/", (_req, res) => res.status(200).send("Servicio24 — V2 Barzel Stable (Redis + Full Emojis)"));
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT} [V2 Barzel Stable]`));
