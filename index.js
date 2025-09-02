@@ -1,9 +1,10 @@
-// index.js — Servicio24 V2 Barzel Stable (Final, final "Gracias" single-use)
+// index.js — Servicio24 V2 Barzel Stable (Final, Gracias no-echo during cooldown)
 // - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
 // - Free-text flow + cooldown + magic reset
-// - Final confirmation is INTERACTIVE with single-use "Gracias" (no new lead)
+// - Final confirmation is INTERACTIVE ("Gracias") sent ONCE at lead creation
+// - During cooldown: pressing "Gracias" sends NOTHING (just marks ack)
 // - No dotenv (Render injects env)
 
 const express = require("express");
@@ -13,10 +14,10 @@ const app = express();
 app.use(express.json());
 
 // ===== Config (with safe defaults) =====
-const GRAPH_VERSION      = process.env.GRAPH_VERSION || "23.0"; // set "23.0" (no 'v') in Render
-const SESSION_TTL_HOURS  = parseInt(process.env.SESSION_TTL_HOURS || "6", 10);
-const COOLDOWN_MINUTES   = parseInt(process.env.COOLDOWN_MINUTES  || "45", 10);
-const RESET_MAGIC        = (process.env.RESET_MAGIC || "oga").toLowerCase();
+const GRAPH_VERSION     = process.env.GRAPH_VERSION || "23.0"; // set "23.0" (no 'v') in Render
+const SESSION_TTL_HOURS = parseInt(process.env.SESSION_TTL_HOURS || "6", 10);
+const COOLDOWN_MINUTES  = parseInt(process.env.COOLDOWN_MINUTES  || "45", 10);
+const RESET_MAGIC       = (process.env.RESET_MAGIC || "oga").toLowerCase();
 
 const GRAPH_BASE = `https://graph.facebook.com/v${GRAPH_VERSION}`;
 const GRAPH_URL  = `${GRAPH_BASE}/${process.env.PHONE_NUMBER_ID}/messages`;
@@ -135,9 +136,7 @@ function sendInteractiveButton(to, headerText, bodyText, buttonId, buttonTitle) 
       header: { type: "text", text: headerText },
       body:   { text: bodyText },
       footer: { text: "Servicio24" },
-      action: {
-        buttons: [{ type: "reply", reply: { id: buttonId, title: buttonTitle } }]
-      }
+      action: { buttons: [{ type: "reply", reply: { id: buttonId, title: buttonTitle } }] }
     }
   });
 }
@@ -290,7 +289,7 @@ function sendFinalInteractive(to, finalText) {
   );
 }
 
-// final lead — INTERACTIVE (no plain text)
+// final lead — INTERACTIVE (sent once at lead creation)
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
   const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
@@ -304,10 +303,10 @@ async function sendLeadReady(to, cityTitle, zone, serviceId) {
 
 // ===== Free-text behavior =====
 async function recoverUI(from, s) {
-  if (!s.started)         { await sendStartConfirm(from); return; }
-  if (!s.city)            { await sendCityMenu(from);     return; }
-  if (!s.zone)            { await sendZonaGroupButtons(from); return; }
-  if (!s.zoneConfirmed)   { await sendZonaConfirm(from, s.zone); return; }
+  if (!s.started)       { await sendStartConfirm(from); return; }
+  if (!s.city)          { await sendCityMenu(from);     return; }
+  if (!s.zone)          { await sendZonaGroupButtons(from); return; }
+  if (!s.zoneConfirmed) { await sendZonaConfirm(from, s.zone); return; }
   const cityTitle = s.city?.title || "Ciudad de Guatemala";
   await sendServicesList(from, cityTitle, s.zone);
 }
@@ -331,6 +330,7 @@ app.post("/webhook", async (req, res) => {
     if (!msg) return res.sendStatus(200);
 
     const from = msg.from;
+    const interactive = msg.interactive; // need early
 
     // ensure session
     let s = await sessGet(from);
@@ -358,21 +358,15 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // DONE + cooldown logic
+    // DONE + cooldown logic (NO echo messages during cooldown)
     if (s.state === "DONE") {
       if (await coolHas(from)) {
-        // if already acknowledged once, ignore further presses/text to avoid noise
-        if (s.finalAcked) {
-          return res.sendStatus(200); // no message sent
+        // If user presses "Gracias" during cooldown: only mark ack (once), send nothing.
+        if (interactive?.type === "button_reply" && interactive.button_reply?.id === "final_ack") {
+          if (!s.finalAcked) { s.finalAcked = true; await sessSet(from, s); }
+          return res.sendStatus(200);
         }
-        const fallback =
-          s.lastConfirmation ||
-          `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
-          `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
-          `En breve te contactarán profesionales cercanos.\n\nServicio24`;
-        await sendFinalInteractive(from, fallback);
-        s.finalAcked = true;
-        await sessSet(from, s);
+        // Any other message during cooldown: ignore silently.
         return res.sendStatus(200);
       } else {
         // cooldown expired → start fresh
@@ -393,9 +387,7 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    const interactive = msg.interactive;
-
-    // list reply
+    // ==== Interactive handling ====
     if (interactive?.type === "list_reply") {
       const id = interactive.list_reply?.id;
 
@@ -433,14 +425,13 @@ app.post("/webhook", async (req, res) => {
         const finalText = await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
         s.state = "DONE";
         s.lastConfirmation = finalText;
-        s.finalAcked = false;     // allow exactly one interactive echo
+        s.finalAcked = false;     // allow one ack press (no response) during cooldown
         await sessSet(from, s);
         await coolSet(from);      // start cooldown
         return res.sendStatus(200);
       }
     }
 
-    // button reply
     if (interactive?.type === "button_reply") {
       const id = interactive.button_reply?.id;
 
@@ -464,33 +455,8 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // final ack button — allow ONCE per cooldown window
-      if (id === "final_ack") {
-        if (await coolHas(from)) {
-          if (s.finalAcked) {
-            return res.sendStatus(200); // ignore further presses during cooldown
-          }
-          const finalText =
-            s.lastConfirmation ||
-            `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
-            `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
-            `En breve te contactarán profesionales cercanos.\n\nServicio24`;
-          await sendFinalInteractive(from, finalText);
-          s.finalAcked = true;
-          await sessSet(from, s);
-          return res.sendStatus(200);
-        } else {
-          // cooldown expired → this press acts like fresh start prompt
-          await sessDel(from);
-          const fresh = {
-            city:null, zone:null, zoneConfirmed:false, serviceId:null,
-            started:false, state:"MENU", lastConfirmation:null, finalAcked:false
-          };
-          await sessSet(from, fresh);
-          await sendStartConfirm(from);
-          return res.sendStatus(200);
-        }
-      }
+      // final ack button during active flow (shouldn't happen) → ignore
+      if (id === "final_ack") return res.sendStatus(200);
     }
 
     // fallback if city missing
@@ -505,7 +471,7 @@ app.post("/webhook", async (req, res) => {
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Emojis + Cooldown + Reset, final Gracias single-use)"),
+  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Emojis + Cooldown + Reset, Gracias no-echo)"),
 );
 
 // ===== Start =====
