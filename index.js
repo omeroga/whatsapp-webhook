@@ -1,9 +1,9 @@
-// index.js - Servicio24 V2 Barzel Stable (Final)
+// index.js — Servicio24 V2 Barzel Stable (Final)
 // - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
 // - Free-text flow + cooldown + magic reset
-// - Idempotency for duplicate WhatsApp deliveries
+// - FINAL CHANGE: final confirmation is an interactive card with a button
 // - No dotenv (Render injects env)
 
 const express = require("express");
@@ -47,15 +47,15 @@ try {
     });
   } else {
     useMemory = true;
-    console.warn("[Redis] REDIS_URL missing - using in-memory sessions");
+    console.warn("[Redis] REDIS_URL missing — using in-memory sessions");
   }
 } catch {
   useMemory = true;
-  console.warn("[Redis] ioredis not available - using in-memory sessions");
+  console.warn("[Redis] ioredis not available — using in-memory sessions");
 }
 
-const mem = new Map(); // session store
-const memKeys = new Set(); // cooldown keys (when memory fallback)
+const mem = new Map();       // session store
+const memKeys = new Set();   // cooldown keys (when memory fallback)
 
 // --- session helpers ---
 async function sessGet(userId) {
@@ -98,23 +98,6 @@ async function coolDel(userId) {
   const key = `s24:cool:${userId}`;
   if (!useMemory && redis) await redis.del(key);
   memKeys.delete(key);
-}
-
-// ===== Idempotency - ignore duplicate WhatsApp deliveries =====
-const seenInMem = new Set();
-async function alreadyHandled(msgId, ttlSec = 60 * 60 * 24) {
-  const key = `s24:seen:${msgId}`;
-  if (!useMemory && redis) {
-    const exists = await redis.get(key);
-    if (exists) return true;
-    await redis.set(key, "1", "EX", ttlSec);
-    return false;
-  } else {
-    if (seenInMem.has(key)) return true;
-    seenInMem.add(key);
-    setTimeout(() => seenInMem.delete(key), ttlSec * 1000).unref?.();
-    return false;
-  }
 }
 
 // ===== Static data =====
@@ -260,6 +243,34 @@ function sendZonaConfirm(to, z) {
   });
 }
 
+// ===== FINAL CONFIRMATION (interactive card instead of plain text) =====
+function buildFinalText(cityTitle, zone, serviceId) {
+  const svc = SERVICES.find(s => s.id === serviceId);
+  const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
+  const zoneEmoji   = ZONA_EMOJI[zone] || "";
+  return `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\nEn breve te contactarán profesionales cercanos.\n\nServicio24`;
+}
+
+async function sendFinalCard(to, cityTitle, zone, serviceId) {
+  const bodyText = buildFinalText(cityTitle, zone, serviceId);
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      header: { type: "text", text: "Confirmación" },
+      body:   { text: bodyText },
+      footer: { text: "Servicio24" },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: "start_over", title: "Nueva solicitud 🔄" } },
+        ]
+      }
+    }
+  });
+}
+
 // services list + consent
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
@@ -280,16 +291,11 @@ function sendServicesList(to, cityTitle, z) {
   });
 }
 
-// final lead
+// final lead (now sends interactive card)
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
-  const svc = SERVICES.find(s => s.id === serviceId);
-  const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
-  const zoneEmoji = ZONA_EMOJI[zone] || "";
-  const text =
-    `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\n` +
-    `En breve te contactarán profesionales cercanos.\n\nServicio24`;
-  await sendText(to, text);
-  return text;
+  const text = buildFinalText(cityTitle, zone, serviceId);
+  await sendFinalCard(to, cityTitle, zone, serviceId);
+  return text; // keep for s.lastConfirmation
 }
 
 // ===== Free-text behavior =====
@@ -320,11 +326,6 @@ app.post("/webhook", async (req, res) => {
     const msg    = value?.messages?.[0];
     if (!msg) return res.sendStatus(200);
 
-    // Idempotency guard
-    if (await alreadyHandled(msg.id)) {
-      return res.sendStatus(200);
-    }
-
     const from = msg.from;
 
     // ensure session
@@ -334,7 +335,7 @@ app.post("/webhook", async (req, res) => {
       await sessSet(from, s);
     }
 
-    // MAGIC RESET - works anytime, clears cooldown too
+    // MAGIC RESET
     if (msg.type === "text") {
       const body = (msg.text?.body || "").trim().toLowerCase();
       if (body === RESET_MAGIC) {
@@ -347,27 +348,14 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // DONE state handling with cooldown
+    // DONE + cooldown logic → always send interactive final card
     if (s.state === "DONE") {
-      if (await coolHas(from)) {
-        const fallback =
-          s.lastConfirmation ||
-          `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
-          `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
-          `En breve te contactarán profesionales cercanos.\n\nServicio24`;
-        await sendText(from, fallback);
-        return res.sendStatus(200);
-      } else {
-        // cooldown expired -> start a fresh flow
-        await sessDel(from);
-        const fresh = { city:null, zone:null, zoneConfirmed:false, serviceId:null, started:false, state:"MENU", lastConfirmation:null };
-        await sessSet(from, fresh);
-        await sendStartConfirm(from);
-        return res.sendStatus(200);
-      }
+      const cityTitle = s.city?.title || "Ciudad de Guatemala";
+      await sendFinalCard(from, cityTitle, s.zone, s.serviceId);
+      return res.sendStatus(200);
     }
 
-    // Regular text (no magic) -> show current UI
+    // Regular text → show current UI
     if (msg.type === "text") {
       await recoverUI(from, s);
       return res.sendStatus(200);
@@ -388,7 +376,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // exact zona
+      // zona
       if (id?.startsWith("zona_")) {
         const z = parseInt(id.split("_")[1], 10);
         if (z >= 1 && z <= 25) {
@@ -440,6 +428,20 @@ app.post("/webhook", async (req, res) => {
         await sendServicesList(from, cityTitle, s.zone);
         return res.sendStatus(200);
       }
+
+      // NEW: start over button
+      if (id === "start_over") {
+        if (await coolHas(from)) {
+          const cityTitle = s.city?.title || "Ciudad de Guatemala";
+          await sendFinalCard(from, cityTitle, s.zone, s.serviceId);
+          return res.sendStatus(200);
+        }
+        await sessDel(from);
+        const fresh = { city:null, zone:null, zoneConfirmed:false, serviceId:null, started:false, state:"MENU", lastConfirmation:null };
+        await sessSet(from, fresh);
+        await sendStartConfirm(from);
+        return res.sendStatus(200);
+      }
     }
 
     // fallback if city missing
@@ -454,7 +456,7 @@ app.post("/webhook", async (req, res) => {
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 - V2 Barzel Stable (Redis + Full Emojis + Cooldown + Reset + Idempotency)"),
+  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Interactive Final Card + Cooldown + Reset)"),
 );
 
 // ===== Start =====
