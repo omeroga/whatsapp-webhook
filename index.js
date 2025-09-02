@@ -1,9 +1,9 @@
-// index.js — Servicio24 V2 Barzel Stable (Final)
+// index.js — Servicio24 V2 Barzel Stable (Final, no final button)
 // - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
 // - Free-text flow + cooldown + magic reset
-// - FINAL CHANGE: final confirmation is an interactive card with a button
+// - Final confirmation is plain text (no buttons)
 // - No dotenv (Render injects env)
 
 const express = require("express");
@@ -54,8 +54,8 @@ try {
   console.warn("[Redis] ioredis not available — using in-memory sessions");
 }
 
-const mem = new Map();       // session store
-const memKeys = new Set();   // cooldown keys (when memory fallback)
+const mem = new Map();     // session store
+const memKeys = new Set(); // cooldown keys (when memory fallback)
 
 // --- session helpers ---
 async function sessGet(userId) {
@@ -243,34 +243,6 @@ function sendZonaConfirm(to, z) {
   });
 }
 
-// ===== FINAL CONFIRMATION (interactive card instead of plain text) =====
-function buildFinalText(cityTitle, zone, serviceId) {
-  const svc = SERVICES.find(s => s.id === serviceId);
-  const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
-  const zoneEmoji   = ZONA_EMOJI[zone] || "";
-  return `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\nEn breve te contactarán profesionales cercanos.\n\nServicio24`;
-}
-
-async function sendFinalCard(to, cityTitle, zone, serviceId) {
-  const bodyText = buildFinalText(cityTitle, zone, serviceId);
-  return postWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
-      header: { type: "text", text: "Confirmación" },
-      body:   { text: bodyText },
-      footer: { text: "Servicio24" },
-      action: {
-        buttons: [
-          { type: "reply", reply: { id: "start_over", title: "Nueva solicitud 🔄" } },
-        ]
-      }
-    }
-  });
-}
-
 // services list + consent
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
@@ -291,11 +263,16 @@ function sendServicesList(to, cityTitle, z) {
   });
 }
 
-// final lead (now sends interactive card)
+// final lead — PLAIN TEXT ONLY (NO BUTTONS)
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
-  const text = buildFinalText(cityTitle, zone, serviceId);
-  await sendFinalCard(to, cityTitle, zone, serviceId);
-  return text; // keep for s.lastConfirmation
+  const svc = SERVICES.find(s => s.id === serviceId);
+  const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
+  const zoneEmoji = ZONA_EMOJI[zone] || "";
+  const text =
+    `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\n` +
+    `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+  await sendText(to, text);
+  return text;
 }
 
 // ===== Free-text behavior =====
@@ -335,7 +312,7 @@ app.post("/webhook", async (req, res) => {
       await sessSet(from, s);
     }
 
-    // MAGIC RESET
+    // MAGIC RESET — anytime
     if (msg.type === "text") {
       const body = (msg.text?.body || "").trim().toLowerCase();
       if (body === RESET_MAGIC) {
@@ -348,11 +325,24 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // DONE + cooldown logic → always send interactive final card
+    // DONE + cooldown logic
     if (s.state === "DONE") {
-      const cityTitle = s.city?.title || "Ciudad de Guatemala";
-      await sendFinalCard(from, cityTitle, s.zone, s.serviceId);
-      return res.sendStatus(200);
+      if (await coolHas(from)) {
+        const fallback =
+          s.lastConfirmation ||
+          `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
+          `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
+          `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+        await sendText(from, fallback); // text only (no buttons)
+        return res.sendStatus(200);
+      } else {
+        // cooldown expired → start fresh
+        await sessDel(from);
+        const fresh = { city:null, zone:null, zoneConfirmed:false, serviceId:null, started:false, state:"MENU", lastConfirmation:null };
+        await sessSet(from, fresh);
+        await sendStartConfirm(from);
+        return res.sendStatus(200);
+      }
     }
 
     // Regular text → show current UI
@@ -376,7 +366,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // zona
+      // exact zona
       if (id?.startsWith("zona_")) {
         const z = parseInt(id.split("_")[1], 10);
         if (z >= 1 && z <= 25) {
@@ -400,7 +390,7 @@ app.post("/webhook", async (req, res) => {
         s.state = "DONE";
         s.lastConfirmation = finalText;
         await sessSet(from, s);
-        await coolSet(from); // start cooldown after lead creation
+        await coolSet(from); // start cooldown
         return res.sendStatus(200);
       }
     }
@@ -428,20 +418,6 @@ app.post("/webhook", async (req, res) => {
         await sendServicesList(from, cityTitle, s.zone);
         return res.sendStatus(200);
       }
-
-      // NEW: start over button
-      if (id === "start_over") {
-        if (await coolHas(from)) {
-          const cityTitle = s.city?.title || "Ciudad de Guatemala";
-          await sendFinalCard(from, cityTitle, s.zone, s.serviceId);
-          return res.sendStatus(200);
-        }
-        await sessDel(from);
-        const fresh = { city:null, zone:null, zoneConfirmed:false, serviceId:null, started:false, state:"MENU", lastConfirmation:null };
-        await sessSet(from, fresh);
-        await sendStartConfirm(from);
-        return res.sendStatus(200);
-      }
     }
 
     // fallback if city missing
@@ -456,7 +432,7 @@ app.post("/webhook", async (req, res) => {
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Interactive Final Card + Cooldown + Reset)"),
+  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Full Emojis + Cooldown + Reset, no final button)"),
 );
 
 // ===== Start =====
