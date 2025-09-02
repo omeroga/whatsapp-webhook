@@ -1,11 +1,12 @@
-// index.js — Servicio24 V2 Barzel Stable + Limits
-// - Graph API v${GRAPH_VERSION} corrected
-// - Redis sessions with in-memory fallback
-// - Full emojis for ZONAS and services (word first, emoji after)
-// - Free-text logic: same menu before DONE, final confirmation after DONE
-// - Consent text updated
-// - Anti-spam: cooldown 60m, dedup 6h for same request, daily limit 3
-// - No dotenv (Render reads ENV)
+// index.js - Servicio24 V2 Barzel Stable + Limits + Magic
+// Graph API v${GRAPH_VERSION} corrected
+// Redis sessions with in-memory fallback
+// Full emojis for ZONAS and services
+// Free-text logic: same menu before DONE, final confirmation after DONE
+// Consent text updated
+// Anti-spam: cooldown 60m, dedup 6h for same request, daily limit 3
+// Admin magic word: rahmani - clears limits and resets to start for testing
+// No dotenv (Render reads ENV)
 
 const express = require("express");
 const axios = require("axios");
@@ -33,6 +34,9 @@ if (!process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) {
 const COOLDOWN_MINUTES = parseInt(process.env.LEAD_COOLDOWN_MIN || "60", 10);   // גלובלי בין לידים
 const DEDUP_HOURS      = parseInt(process.env.LEAD_DEDUP_HOURS || "6", 10);     // לאותו שירות+zona+עיר
 const DAILY_LIMIT      = parseInt(process.env.LEAD_DAILY_LIMIT || "3", 10);     // לידים ב-24h פר משתמש
+
+// ===== Admin Magic Word =====
+const ADMIN_MAGIC_WORD = "rahmani"; // lowercase match
 
 // ===== Redis sessions (fallback to memory) =====
 let redis = null;
@@ -79,29 +83,33 @@ const memCooldown = new Map(); // key: user -> expireAt
 const memDaily    = new Map(); // key: user -> {count, expireAt}
 const memDedup    = new Map(); // key: user:city:zone:service -> expireAt
 
-function nowSec() { return Math.floor(Date.now() / 1000); }
-
-async function getTTL(key) {
+async function clearAntiSpam(user) {
+  const cdKey  = `s24:cd:${user}`;
+  const dayKey = `s24:day:${user}`;
   if (!useMemory && redis) {
-    const ttl = await redis.ttl(key);
-    return ttl; // -2 no key, -1 no expire, >=0 seconds
+    // delete cooldown and daily
+    await redis.del(cdKey);
+    await redis.del(dayKey);
+    // delete all dedup keys for this user
+    let cursor = "0";
+    do {
+      const [next, keys] = await redis.scan(cursor, "MATCH", `s24:d:${user}:*`, "COUNT", 100);
+      cursor = next;
+      if (keys.length) await redis.del(...keys);
+    } while (cursor !== "0");
   } else {
-    const exp = (memCooldown.get(key) || memDedup.get(key) || (memDaily.get(key)?.expireAt)) || 0;
-    const leftMs = exp - Date.now();
-    return leftMs > 0 ? Math.floor(leftMs / 1000) : -2;
+    memCooldown.delete(user);
+    memDaily.delete(user);
+    for (const k of Array.from(memDedup.keys())) {
+      if (k.startsWith(`s24:d:${user}:`)) memDedup.delete(k);
+    }
   }
 }
 
-async function setExp(key, seconds) {
-  if (!useMemory && redis) {
-    // caller must set value separately for redis, here we just expire if exists
-    await redis.expire(key, seconds);
-  } else {
-    // handled in specific setters below
-  }
-}
+async function canCreateLead(user, cityId, zone, serviceId, s) {
+  // Bypass for next lead if admin magic was used
+  if (s?.adminBypass) return { ok: true, bypass: true };
 
-async function canCreateLead(user, cityId, zone, serviceId) {
   const cdKey   = `s24:cd:${user}`;
   const dayKey  = `s24:day:${user}`;
   const dKey    = `s24:d:${user}:${cityId || "city"}:${zone || "z"}:${serviceId || "srv"}`;
@@ -169,8 +177,9 @@ async function recordLead(user, cityId, zone, serviceId) {
 
     // dedup
     const expAt = Date.now() + DEDUP_HOURS * 60 * 60 * 1000;
-    memDedup.set(dKey, expAt);
-    setTimeout(() => memDedup.delete(dKey), DEDUP_HOURS * 60 * 60 * 1000).unref?.();
+    const dKeyMem = `s24:d:${user}:${cityId || "city"}:${zone || "z"}:${serviceId || "srv"}`;
+    memDedup.set(dKeyMem, expAt);
+    setTimeout(() => memDedup.delete(dKeyMem), DEDUP_HOURS * 60 * 60 * 1000).unref?.();
   }
 }
 
@@ -369,7 +378,7 @@ async function sendLeadReady(to, cityTitle, zone, serviceId) {
     `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\n` +
     `En breve te contactarán profesionales cercanos.\n\nServicio24`;
   await sendText(to, text);
-  return text; // נחזיר את הטקסט לשימוש חוזר במסך DONE
+  return text; // לשימוש במסך DONE
 }
 
 // ===== Free-text behavior =====
@@ -416,11 +425,24 @@ app.post("/webhook", async (req, res) => {
       await sessSet(from, s);
     }
 
-    // TEXT - לפי ה-state
+    // TEXT - according to state
     if (msg.type === "text") {
-      const body = (msg.text?.body || "").trim().toLowerCase();
+      const rawBody = (msg.text?.body || "");
+      const body = rawBody.trim().toLowerCase();
 
-      // reset words
+      // Admin magic word - clear limits and reset to start with bypass
+      if (ADMIN_MAGIC_WORD && body === ADMIN_MAGIC_WORD) {
+        await clearAntiSpam(from);
+        s = {
+          city: null, zone: null, zoneConfirmed: false, serviceId: null,
+          started: false, state: "MENU", lastConfirmation: null, ts: Date.now(), adminBypass: true
+        };
+        await sessSet(from, s);
+        await sendStartConfirm(from);
+        return res.sendStatus(200);
+      }
+
+      // User reset words
       const RESET = new Set(["menu","nuevo","reiniciar","reset","inicio","start"]);
       if (RESET.has(body)) {
         s = { city: null, zone: null, zoneConfirmed: false, serviceId: null, started: false, state: "MENU", lastConfirmation: null, ts: Date.now() };
@@ -443,7 +465,7 @@ app.post("/webhook", async (req, res) => {
     if (interactive?.type === "list_reply") {
       const id = interactive.list_reply?.id;
 
-      // עיר
+      // ciudad
       if (CITIES.some(c => c.id === id)) {
         const city = CITIES.find(c => c.id === id);
         s.city = city; s.zone = null; s.zoneConfirmed = false; s.serviceId = null; s.started = true; s.state = "MENU";
@@ -452,7 +474,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // זונה מדויקת
+      // zona exacta
       if (id?.startsWith("zona_")) {
         const z = parseInt(id.split("_")[1], 10);
         if (z >= 1 && z <= 25) {
@@ -463,7 +485,7 @@ app.post("/webhook", async (req, res) => {
         }
       }
 
-      // שירות
+      // servicio
       if (SERVICE_LABEL[id]) {
         if (!s.zoneConfirmed) {
           await sendText(from, "Primero selecciona y confirma tu zona para continuar.");
@@ -471,9 +493,9 @@ app.post("/webhook", async (req, res) => {
           return res.sendStatus(200);
         }
 
-        // ----- Anti-spam checks before creating a lead -----
+        // Anti-spam checks before creating a lead
         const cityId = s.city?.id || "city_guatemala";
-        const chk = await canCreateLead(from, cityId, s.zone, id);
+        const chk = await canCreateLead(from, cityId, s.zone, id, s);
         if (!chk.ok) {
           if (chk.reason === "cooldown") {
             await sendText(from, "Tu solicitud reciente está en proceso. Podrás crear otra en aproximadamente 1 hora.");
@@ -487,17 +509,20 @@ app.post("/webhook", async (req, res) => {
           return res.sendStatus(200);
         }
 
-        // יצירת ליד
+        // Create lead
         s.serviceId = id;
         const cityTitle = s.city?.title || "Ciudad de Guatemala";
         const finalText = await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
 
-        // סימון אחרי יצירה: cooldown + dedup + daily
-        await recordLead(from, cityId, s.zone, s.serviceId);
+        // Record anti-spam limits unless bypass was used
+        if (!s.adminBypass) {
+          await recordLead(from, cityId, s.zone, s.serviceId);
+        }
 
-        // מצב סיום
+        // Final state
         s.state = "DONE";
         s.lastConfirmation = finalText;
+        if (s.adminBypass) delete s.adminBypass; // one-time bypass
         await sessSet(from, s);
         return res.sendStatus(200);
       }
@@ -541,8 +566,8 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ===== Health =====
-app.get("/", (_req, res) => res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Full Emojis + Limits)"));
+app.get("/", (_req, res) => res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Full Emojis + Limits + Magic)"));
 
 // ===== Start =====
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT} [V2 Barzel Stable + Limits]`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT} [V2 Barzel Stable + Limits + Magic]`));
