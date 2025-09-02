@@ -15,7 +15,7 @@ app.use(express.json());
 const GRAPH_VERSION      = process.env.GRAPH_VERSION || "23.0"; // set "23.0" (no 'v') in Render
 const SESSION_TTL_HOURS  = parseInt(process.env.SESSION_TTL_HOURS || "6", 10);
 const COOLDOWN_MINUTES   = parseInt(process.env.COOLDOWN_MINUTES  || "45", 10);
-const RESET_MAGIC        = (process.env.RESET_MAGIC || "rahmani").toLowerCase();
+const RESET_MAGIC        = (process.env.RESET_MAGIC || "oga").toLowerCase();
 
 const GRAPH_BASE = `https://graph.facebook.com/v${GRAPH_VERSION}`;
 const GRAPH_URL  = `${GRAPH_BASE}/${process.env.PHONE_NUMBER_ID}/messages`;
