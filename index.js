@@ -1,9 +1,9 @@
-// index.js — Servicio24 V2 Barzel Stable (Final, no final button)
+// index.js — Servicio24 V2 Barzel Stable (Final, final "Gracias" button)
 // - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
 // - Free-text flow + cooldown + magic reset
-// - Final confirmation is plain text (no buttons)
+// - Final confirmation is INTERACTIVE with a single "Gracias" button (no new lead)
 // - No dotenv (Render injects env)
 
 const express = require("express");
@@ -124,6 +124,22 @@ const ZONA_EMOJI = {
 function postWA(payload) { return axios.post(GRAPH_URL, payload, AUTH); }
 function sendText(to, text) {
   return postWA({ messaging_product: "whatsapp", to, type: "text", text: { body: text } });
+}
+function sendInteractiveButton(to, headerText, bodyText, buttonId, buttonTitle) {
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      header: { type: "text", text: headerText },
+      body:   { text: bodyText },
+      footer: { text: "Servicio24" },
+      action: {
+        buttons: [{ type: "reply", reply: { id: buttonId, title: buttonTitle } }]
+      }
+    }
+  });
 }
 
 // UI: start confirm
@@ -263,16 +279,27 @@ function sendServicesList(to, cityTitle, z) {
   });
 }
 
-// final lead — PLAIN TEXT ONLY (NO BUTTONS)
+// final interactive ("Gracias") — keeps keyboard closed
+function sendFinalInteractive(to, finalText) {
+  return sendInteractiveButton(
+    to,
+    "Servicio24",
+    finalText,
+    "final_ack",
+    "Gracias 🙏"
+  );
+}
+
+// final lead — now sends INTERACTIVE (no plain text)
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
   const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
   const zoneEmoji = ZONA_EMOJI[zone] || "";
-  const text =
+  const finalText =
     `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\n` +
     `En breve te contactarán profesionales cercanos.\n\nServicio24`;
-  await sendText(to, text);
-  return text;
+  await sendFinalInteractive(to, finalText);
+  return finalText;
 }
 
 // ===== Free-text behavior =====
@@ -333,7 +360,8 @@ app.post("/webhook", async (req, res) => {
           `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
           `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
           `En breve te contactarán profesionales cercanos.\n\nServicio24`;
-        await sendText(from, fallback); // text only (no buttons)
+        // keep keyboard closed: send the same final as interactive with "Gracias"
+        await sendFinalInteractive(from, fallback);
         return res.sendStatus(200);
       } else {
         // cooldown expired → start fresh
@@ -418,6 +446,17 @@ app.post("/webhook", async (req, res) => {
         await sendServicesList(from, cityTitle, s.zone);
         return res.sendStatus(200);
       }
+
+      // final ack button — echo last confirmation interactively
+      if (id === "final_ack") {
+        const finalText =
+          s.lastConfirmation ||
+          `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
+          `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
+          `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+        await sendFinalInteractive(from, finalText);
+        return res.sendStatus(200);
+      }
     }
 
     // fallback if city missing
@@ -432,7 +471,7 @@ app.post("/webhook", async (req, res) => {
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Full Emojis + Cooldown + Reset, no final button)"),
+  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Emojis + Cooldown + Reset, final Gracias)"),
 );
 
 // ===== Start =====
