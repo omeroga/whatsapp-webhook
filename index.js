@@ -1,4 +1,4 @@
-// index.js — Servicio24 V2 Barzel Stable (Ads + Gracias + Urgency)
+// index.js — Servicio24 V2 Barzel Stable (Ads + Gracias + Urgency + Formatting)
 // - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
@@ -6,7 +6,9 @@
 // - Final confirmation is INTERACTIVE with single-use "Gracias" (no new lead)
 // - Urgency question after service selection (internal flag only, not shown to client in final text)
 // - Ads flow: prefill city/zone/service, confirm "Sí ✅ / Cambiar 🔄", city locked for ads
-// - No dotenv (Render injects env)
+// - Multi-line final message (with blank lines), unified across organic/ads
+// - City shown before Zone everywhere
+// - No "Servicio24" inside body texts (only header/footer)
 
 const express = require("express");
 const axios = require("axios");
@@ -118,7 +120,7 @@ const SERVICE_LABEL = Object.fromEntries(SERVICES.map(s => [s.id, s.label]));
 const SERVICE_NAME_TO_ID = (() => {
   const map = {};
   for (const s of SERVICES) map[s.label.toLowerCase()] = s.id;
-  // alias comunes
+  // aliases comunes
   map["plomero"] = "srv_plomero";
   map["electricista"] = "srv_electricista";
   map["cerrajero"] = "srv_cerrajero";
@@ -295,7 +297,7 @@ function sendServicesList(to, cityTitle, z) {
   });
 }
 
-// URGENCY question (after service selection)
+// ===== URGENCY question (after service selection) =====
 function sendUrgencyQuestion(to) {
   return postWA({
     messaging_product: "whatsapp",
@@ -316,7 +318,7 @@ function sendUrgencyQuestion(to) {
   });
 }
 
-// final interactive ("Gracias") — keeps keyboard closed
+// ===== FINAL interactive ("Gracias") — keeps keyboard closed =====
 function sendFinalInteractive(to, finalText) {
   return sendInteractiveButton(
     to,
@@ -327,28 +329,27 @@ function sendFinalInteractive(to, finalText) {
   );
 }
 
-// final lead — INTERACTIVE (no plain text)
+// ===== FINAL lead (INTERACTIVE) — unified multiline (City then Zone) =====
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
   const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
   const zoneEmoji = ZONA_EMOJI[zone] || "";
   const finalText =
-    `Listo ✅\n` +
-    `${serviceText}\n` +
-    `Zona ${zone} ${zoneEmoji}\n` +
-    `${cityTitle}\n` +
+    `Listo ✅\n\n` +
+    `${serviceText}\n\n` +
+    `${cityTitle}\n\n` +
+    `Zona ${zone} ${zoneEmoji}\n\n` +
     `En breve te contactarán profesionales cercanos.`;
   await sendFinalInteractive(to, finalText);
   return finalText;
 }
 
 // ===== ADS: parsing prefill from first text =====
+// Pattern example:  "#ad city=city_guatemala&zone=7&service=srv_electricista"
 function parseAdParams(rawText) {
   if (!rawText) return null;
   const text = String(rawText).trim();
 
-  // Expect pattern like: "#ad city=city_guatemala&zone=7&service=srv_electricista"
-  // Also accept service/e.g. "service=electricista"
   const m = text.match(/#ad\s+(.+)$/i);
   if (!m) return null;
   const qs = m[1];
@@ -380,7 +381,6 @@ function parseAdParams(rawText) {
     const found = CITIES.find(c => c.id === cityId);
     if (found) city = found;
   }
-  // default if missing/invalid (we lock to this if ad source)
   if (!city) city = CITIES[0];
 
   return {
@@ -390,12 +390,14 @@ function parseAdParams(rawText) {
   };
 }
 
-// ADS confirm screen
+// ===== ADS confirm screen (with service emoji; City then Zone) =====
 function sendAdConfirm(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
-  const svcText = svc ? svc.label : "Profesional";
+  const svcText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
   const zEmoji = ZONA_EMOJI[zone] || "";
-  const body = `¿Buscas *${svcText}* en *${cityTitle}*, Zona ${zone} ${zEmoji}?`;
+  const body =
+    `¿Buscas *${svcText}* en *${cityTitle}*?\n` +
+    `Zona ${zone} ${zEmoji}`;
   return postWA({
     messaging_product: "whatsapp",
     to,
@@ -419,7 +421,7 @@ function sendAdConfirm(to, cityTitle, zone, serviceId) {
 async function recoverUI(from, s) {
   if (!s.started) { await sendStartConfirm(from); return; }
 
-  // ADS flow
+  // ADS flow: respect ad city lock
   if (s.source === "ad") {
     if (!s.zone)          { await sendZonaGroupButtons(from); return; }
     if (!s.zoneConfirmed) { await sendZonaConfirm(from, s.zone); return; }
@@ -502,7 +504,7 @@ app.post("/webhook", async (req, res) => {
           s.adLockCity = true;
           s.city = ad.city;
           s.zone = ad.zone;
-          s.zoneConfirmed = true; // from ad
+          s.zoneConfirmed = true;
           s.serviceId = ad.serviceId;
           s.urgency = null;
           s.state = "MENU";
@@ -519,16 +521,20 @@ app.post("/webhook", async (req, res) => {
           if (s.finalAcked) return res.sendStatus(200);
           const fallback =
             s.lastConfirmation ||
-            `Listo ✅\n` +
-            `${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")}\n` +
-            `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n` +
-            `${(s.city?.title || "Ciudad de Guatemala")}\n` +
-            `En breve te contactarán profesionales cercanos.`;
+            (
+              `Listo ✅\n\n` +
+              `${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ` +
+              `${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")}\n\n` +
+              `${(s.city?.title || "Ciudad de Guatemala")}\n\n` +
+              `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n\n` +
+              `En breve te contactarán profesionales cercanos.`
+            );
           await sendFinalInteractive(from, fallback);
           s.finalAcked = true;
           await sessSet(from, s);
           return res.sendStatus(200);
         } else {
+          // cooldown expired → start fresh
           await sessDel(from);
           const fresh = {
             city:null, zone:null, zoneConfirmed:false, serviceId:null,
@@ -555,7 +561,7 @@ app.post("/webhook", async (req, res) => {
       // city (only if not ad-locked)
       if (CITIES.some(c => c.id === id)) {
         if (s.adLockCity) {
-          // ignore changing city in ad flow; push to zone instead
+          // ignore city change in ad flow; go pick zone
           await sendZonaGroupButtons(from);
           return res.sendStatus(200);
         }
@@ -583,14 +589,13 @@ app.post("/webhook", async (req, res) => {
       if (SERVICE_LABEL[id]) {
         if (!s.zoneConfirmed) {
           await sendText(from, "Primero selecciona y confirma tu zona para continuar.");
-       	  await sendZonaGroupButtons(from);
+          await sendZonaGroupButtons(from);
           return res.sendStatus(200);
         }
         s.serviceId = id;
-        s.urgency = null; // reset for new service choice
+        s.urgency = null;
         s.finalAcked = false;
         await sessSet(from, s);
-        // ask urgency (last question)
         await sendUrgencyQuestion(from);
         return res.sendStatus(200);
       }
@@ -622,7 +627,6 @@ app.post("/webhook", async (req, res) => {
 
       // ADS confirm buttons
       if (id === "ad_yes") {
-        // accept the prefilled city/zone/service — go to urgency
         s.started = true;
         s.state = "MENU";
         s.zoneConfirmed = true;
@@ -632,7 +636,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
       if (id === "ad_change") {
-        // City locked; ask zone first, then service
+        // City locked; user can change zone first, then service
         s.state = "MENU";
         s.serviceId = null;
         s.urgency = null;
@@ -642,18 +646,17 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // urgency answers
+      // URGENCY answers
       if (id === "urgency_now" || id === "urgency_later") {
-        s.urgency = (id === "urgency_now") ? "now" : "later"; // internal flag only
+        s.urgency = (id === "urgency_now") ? "now" : "later"; // internal only
         await sessSet(from, s);
-        // proceed to final lead creation
         const cityTitle = s.city?.title || "Ciudad de Guatemala";
         const finalText = await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
         s.state = "DONE";
         s.lastConfirmation = finalText;
-        s.finalAcked = false;     // allow exactly one final interactive echo
+        s.finalAcked = false;     // allow one final interactive echo
         await sessSet(from, s);
-        await coolSet(from);      // start cooldown after lead creation
+        await coolSet(from);      // start cooldown
         return res.sendStatus(200);
       }
 
@@ -665,11 +668,14 @@ app.post("/webhook", async (req, res) => {
           }
           const finalText =
             s.lastConfirmation ||
-            `Listo ✅\n` +
-            `${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")}\n` +
-            `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n` +
-            `${(s.city?.title || "Ciudad de Guatemala")}\n` +
-            `En breve te contactarán profesionales cercanos.`;
+            (
+              `Listo ✅\n\n` +
+              `${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ` +
+              `${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")}\n\n` +
+              `${(s.city?.title || "Ciudad de Guatemala")}\n\n` +
+              `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n\n` +
+              `En breve te contactarán profesionales cercanos.`
+            );
           await sendFinalInteractive(from, finalText);
           s.finalAcked = true;
           await sessSet(from, s);
@@ -708,7 +714,7 @@ app.post("/webhook", async (req, res) => {
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Ads + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use)"),
+  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Ads + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use + Formatting)"),
 );
 
 // ===== Start =====
