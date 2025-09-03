@@ -327,7 +327,7 @@ function sendFinalInteractive(to, finalText) {
   );
 }
 
-// final lead — INTERACTIVE (multi-line format)
+// final lead — INTERACTIVE (no plain text)
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
   const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
@@ -336,8 +336,8 @@ async function sendLeadReady(to, cityTitle, zone, serviceId) {
     `Listo ✅\n` +
     `${serviceText}\n` +
     `Zona ${zone} ${zoneEmoji}\n` +
-    `${cityTitle}.\n` +
-    `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+    `${cityTitle}\n` +
+    `En breve te contactarán profesionales cercanos.`;
   await sendFinalInteractive(to, finalText);
   return finalText;
 }
@@ -364,15 +364,12 @@ function parseAdParams(rawText) {
   let zoneStr = params.zone || params.zona || params.z;
   let service = params.service || params.servicio || params.s;
 
-  // normalize service (FIXED)
+  // normalize service
   let serviceId = null;
   if (service) {
     const sv = service.toLowerCase();
-    if (sv.startsWith("srv_") && SERVICE_LABEL[sv]) {
-      serviceId = sv;
-    } else {
-      serviceId = SERVICE_NAME_TO_ID[sv] || null;
-    }
+    serviceId = SERVICE_LABEL[sv] ? sv : (SERVICE_NAME_TO_ID[sv] || null);
+    if (!serviceId && sv.startsWith("srv_")) serviceId = sv;
   }
 
   const zone = zoneStr ? parseInt(zoneStr, 10) : null;
@@ -383,7 +380,7 @@ function parseAdParams(rawText) {
     const found = CITIES.find(c => c.id === cityId);
     if (found) city = found;
   }
-  // default if missing/invalid (lock to default if ad source)
+  // default if missing/invalid (we lock to this if ad source)
   if (!city) city = CITIES[0];
 
   return {
@@ -393,10 +390,10 @@ function parseAdParams(rawText) {
   };
 }
 
-// ADS confirm screen (with service emoji)
+// ADS confirm screen
 function sendAdConfirm(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
-  const svcText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
+  const svcText = svc ? svc.label : "Profesional";
   const zEmoji = ZONA_EMOJI[zone] || "";
   const body = `¿Buscas *${svcText}* en *${cityTitle}*, Zona ${zone} ${zEmoji}?`;
   return postWA({
@@ -420,8 +417,7 @@ function sendAdConfirm(to, cityTitle, zone, serviceId) {
 
 // ===== Free-text behavior =====
 async function recoverUI(from, s) {
-  // If came from ad and city locked, skip city step
-  if (!s.started)         { await sendStartConfirm(from); return; }
+  if (!s.started) { await sendStartConfirm(from); return; }
 
   // ADS flow
   if (s.source === "ad") {
@@ -512,7 +508,6 @@ app.post("/webhook", async (req, res) => {
           s.state = "MENU";
           s.finalAcked = false;
           await sessSet(from, s);
-          console.log("[ADS] parsed", { city: s.city?.id, zone: s.zone, serviceId: s.serviceId });
           await sendAdConfirm(from, s.city.title, s.zone, s.serviceId);
           return res.sendStatus(200);
         }
@@ -527,8 +522,8 @@ app.post("/webhook", async (req, res) => {
             `Listo ✅\n` +
             `${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")}\n` +
             `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n` +
-            `${(s.city?.title || "Ciudad de Guatemala")}.\n` +
-            `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+            `${(s.city?.title || "Ciudad de Guatemala")}\n` +
+            `En breve te contactarán profesionales cercanos.`;
           await sendFinalInteractive(from, fallback);
           s.finalAcked = true;
           await sessSet(from, s);
@@ -588,7 +583,7 @@ app.post("/webhook", async (req, res) => {
       if (SERVICE_LABEL[id]) {
         if (!s.zoneConfirmed) {
           await sendText(from, "Primero selecciona y confirma tu zona para continuar.");
-          await sendZonaGroupButtons(from);
+       	  await sendZonaGroupButtons(from);
           return res.sendStatus(200);
         }
         s.serviceId = id;
@@ -673,8 +668,8 @@ app.post("/webhook", async (req, res) => {
             `Listo ✅\n` +
             `${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")}\n` +
             `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n` +
-            `${(s.city?.title || "Ciudad de Guatemala")}.\n` +
-            `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+            `${(s.city?.title || "Ciudad de Guatemala")}\n` +
+            `En breve te contactarán profesionales cercanos.`;
           await sendFinalInteractive(from, finalText);
           s.finalAcked = true;
           await sessSet(from, s);
@@ -694,9 +689,9 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // fallback if city missing (respect ad lock) — FIXED
+    // fallback if city missing (respect ad lock)
     if (!s.city) {
-      if (s.adLockCity) {
+      if (s.adLockCity && s.city) {
         await sendZonaGroupButtons(from);
       } else {
         await sendCityMenu(from);
