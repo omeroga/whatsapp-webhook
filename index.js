@@ -289,18 +289,17 @@ function sendUrgencyQuestion(to) {
     interactive: {
       type: "button",
       header: { type: "text", text: "Prioridad" },
-      body:   { text: "¿El servicio es para ahora o puedes agendar?" },
+      body:   { text: "¿El servicio es para ahora?" },
       footer: { text: "Servicio24" },
       action: {
         buttons: [
-          { type: "reply", reply: { id: "urgency_now",   title: "Sí, lo necesito ahora 🚀" } },
-          { type: "reply", reply: { id: "urgency_later", title: "No, puedo agendar 📆" } },
+          { type: "reply", reply: { id: "urgency_now",   title: "Sí ✅" } },
+          { type: "reply", reply: { id: "urgency_later", title: "No ❌" } },
         ],
       },
     },
   });
 }
-
 // final interactive ("Gracias") — keeps keyboard closed
 function sendFinalInteractive(to, finalText) {
   return sendInteractiveButton(
