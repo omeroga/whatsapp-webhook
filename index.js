@@ -115,12 +115,10 @@ const SERVICES = [
   { id: "srv_mudanza",      label: "Mudanza",            emoji: "🚚" },
 ];
 const SERVICE_LABEL = Object.fromEntries(SERVICES.map(s => [s.id, s.label]));
-
-// name→id map for ads parsing
 const SERVICE_NAME_TO_ID = (() => {
   const map = {};
   for (const s of SERVICES) map[s.label.toLowerCase()] = s.id;
-  // common aliases
+  // alias comunes
   map["plomero"] = "srv_plomero";
   map["electricista"] = "srv_electricista";
   map["cerrajero"] = "srv_cerrajero";
@@ -329,7 +327,7 @@ function sendFinalInteractive(to, finalText) {
   );
 }
 
-// final lead — INTERACTIVE (multi-line summary for both organic & ads)
+// final lead — INTERACTIVE (multi-line format)
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
   const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
@@ -350,7 +348,7 @@ function parseAdParams(rawText) {
   const text = String(rawText).trim();
 
   // Expect pattern like: "#ad city=city_guatemala&zone=7&service=srv_electricista"
-  // Also accept service names (e.g., "service=electricista")
+  // Also accept service/e.g. "service=electricista"
   const m = text.match(/#ad\s+(.+)$/i);
   if (!m) return null;
   const qs = m[1];
@@ -362,15 +360,15 @@ function parseAdParams(rawText) {
     params[k.toLowerCase()] = decodeURIComponent((v||"").trim());
   });
 
-  let cityId   = params.city || params.ciudad || params.c;
-  let zoneStr  = params.zone || params.zona  || params.z;
-  let service  = params.service || params.servicio || params.s;
+  let cityId = params.city || params.ciudad || params.c;
+  let zoneStr = params.zone || params.zona || params.z;
+  let service = params.service || params.servicio || params.s;
 
-  // normalize service → id
+  // normalize service (FIXED)
   let serviceId = null;
   if (service) {
     const sv = service.toLowerCase();
-    if (sv.startsWith("srv_")) {
+    if (sv.startsWith("srv_") && SERVICE_LABEL[sv]) {
       serviceId = sv;
     } else {
       serviceId = SERVICE_NAME_TO_ID[sv] || null;
@@ -385,19 +383,17 @@ function parseAdParams(rawText) {
     const found = CITIES.find(c => c.id === cityId);
     if (found) city = found;
   }
-  if (!city) city = CITIES[0]; // default city if missing/invalid
-
-  // validate serviceId exists
-  const validService = serviceId && SERVICES.some(s => s.id === serviceId) ? serviceId : null;
+  // default if missing/invalid (lock to default if ad source)
+  if (!city) city = CITIES[0];
 
   return {
     city,
     zone: (zone && zone >=1 && zone <=25) ? zone : null,
-    serviceId: validService
+    serviceId: (serviceId && SERVICE_LABEL[serviceId]) ? serviceId : null
   };
 }
 
-// ADS confirm screen (includes service emoji)
+// ADS confirm screen (with service emoji)
 function sendAdConfirm(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
   const svcText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
@@ -424,7 +420,8 @@ function sendAdConfirm(to, cityTitle, zone, serviceId) {
 
 // ===== Free-text behavior =====
 async function recoverUI(from, s) {
-  if (!s.started) { await sendStartConfirm(from); return; }
+  // If came from ad and city locked, skip city step
+  if (!s.started)         { await sendStartConfirm(from); return; }
 
   // ADS flow
   if (s.source === "ad") {
@@ -515,6 +512,7 @@ app.post("/webhook", async (req, res) => {
           s.state = "MENU";
           s.finalAcked = false;
           await sessSet(from, s);
+          console.log("[ADS] parsed", { city: s.city?.id, zone: s.zone, serviceId: s.serviceId });
           await sendAdConfirm(from, s.city.title, s.zone, s.serviceId);
           return res.sendStatus(200);
         }
@@ -653,7 +651,7 @@ app.post("/webhook", async (req, res) => {
       if (id === "urgency_now" || id === "urgency_later") {
         s.urgency = (id === "urgency_now") ? "now" : "later"; // internal flag only
         await sessSet(from, s);
-        // proceed to final lead creation (same summary for ads & organic)
+        // proceed to final lead creation
         const cityTitle = s.city?.title || "Ciudad de Guatemala";
         const finalText = await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
         s.state = "DONE";
@@ -696,9 +694,9 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // fallback if city missing (respect ad lock)
+    // fallback if city missing (respect ad lock) — FIXED
     if (!s.city) {
-      if (s.adLockCity && s.city) {
+      if (s.adLockCity) {
         await sendZonaGroupButtons(from);
       } else {
         await sendCityMenu(from);
