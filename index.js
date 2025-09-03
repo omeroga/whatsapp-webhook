@@ -115,10 +115,12 @@ const SERVICES = [
   { id: "srv_mudanza",      label: "Mudanza",            emoji: "🚚" },
 ];
 const SERVICE_LABEL = Object.fromEntries(SERVICES.map(s => [s.id, s.label]));
+
+// name→id map for ads parsing
 const SERVICE_NAME_TO_ID = (() => {
   const map = {};
   for (const s of SERVICES) map[s.label.toLowerCase()] = s.id;
-  // alias comunes
+  // common aliases
   map["plomero"] = "srv_plomero";
   map["electricista"] = "srv_electricista";
   map["cerrajero"] = "srv_cerrajero";
@@ -327,13 +329,16 @@ function sendFinalInteractive(to, finalText) {
   );
 }
 
-// final lead — INTERACTIVE (no plain text)
+// final lead — INTERACTIVE (multi-line summary for both organic & ads)
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
-  const serviceText = svc ? `${svc.label} ${s.emoji || ""}`.trim() : "Profesional 👤";
+  const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
   const zoneEmoji = ZONA_EMOJI[zone] || "";
   const finalText =
-    `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\n` +
+    `Listo ✅\n` +
+    `${serviceText}\n` +
+    `Zona ${zone} ${zoneEmoji}\n` +
+    `${cityTitle}.\n` +
     `En breve te contactarán profesionales cercanos.\n\nServicio24`;
   await sendFinalInteractive(to, finalText);
   return finalText;
@@ -345,7 +350,7 @@ function parseAdParams(rawText) {
   const text = String(rawText).trim();
 
   // Expect pattern like: "#ad city=city_guatemala&zone=7&service=srv_electricista"
-  // Also accept service/e.g. "service=electricista"
+  // Also accept service names (e.g., "service=electricista")
   const m = text.match(/#ad\s+(.+)$/i);
   if (!m) return null;
   const qs = m[1];
@@ -357,16 +362,19 @@ function parseAdParams(rawText) {
     params[k.toLowerCase()] = decodeURIComponent((v||"").trim());
   });
 
-  let cityId = params.city || params.ciudad || params.c;
-  let zoneStr = params.zone || params.zona || params.z;
-  let service = params.service || params.servicio || params.s;
+  let cityId   = params.city || params.ciudad || params.c;
+  let zoneStr  = params.zone || params.zona  || params.z;
+  let service  = params.service || params.servicio || params.s;
 
-  // normalize service
+  // normalize service → id
   let serviceId = null;
   if (service) {
     const sv = service.toLowerCase();
-    serviceId = SERVICE_LABEL[sv] ? sv : (SERVICE_NAME_TO_ID[sv] || null);
-    if (!serviceId && sv.startsWith("srv_")) serviceId = sv;
+    if (sv.startsWith("srv_")) {
+      serviceId = sv;
+    } else {
+      serviceId = SERVICE_NAME_TO_ID[sv] || null;
+    }
   }
 
   const zone = zoneStr ? parseInt(zoneStr, 10) : null;
@@ -377,20 +385,22 @@ function parseAdParams(rawText) {
     const found = CITIES.find(c => c.id === cityId);
     if (found) city = found;
   }
-  // default if missing/invalid (we lock to this if ad source)
-  if (!city) city = CITIES[0];
+  if (!city) city = CITIES[0]; // default city if missing/invalid
+
+  // validate serviceId exists
+  const validService = serviceId && SERVICES.some(s => s.id === serviceId) ? serviceId : null;
 
   return {
     city,
     zone: (zone && zone >=1 && zone <=25) ? zone : null,
-    serviceId: (serviceId && SERVICE_LABEL[serviceId]) ? serviceId : null
+    serviceId: validService
   };
 }
 
-// ADS confirm screen
+// ADS confirm screen (includes service emoji)
 function sendAdConfirm(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
-  const svcText = svc ? svc.label : "Profesional";
+  const svcText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
   const zEmoji = ZONA_EMOJI[zone] || "";
   const body = `¿Buscas *${svcText}* en *${cityTitle}*, Zona ${zone} ${zEmoji}?`;
   return postWA({
@@ -414,10 +424,9 @@ function sendAdConfirm(to, cityTitle, zone, serviceId) {
 
 // ===== Free-text behavior =====
 async function recoverUI(from, s) {
-  // If came from ad and city locked, skip city step
-  if (!s.started)         { await sendStartConfirm(from); return; }
+  if (!s.started) { await sendStartConfirm(from); return; }
 
-  // ADS flow: if ad source and missing selections, drive accordingly
+  // ADS flow
   if (s.source === "ad") {
     if (!s.zone)          { await sendZonaGroupButtons(from); return; }
     if (!s.zoneConfirmed) { await sendZonaConfirm(from, s.zone); return; }
@@ -517,8 +526,10 @@ app.post("/webhook", async (req, res) => {
           if (s.finalAcked) return res.sendStatus(200);
           const fallback =
             s.lastConfirmation ||
-            `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
-            `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
+            `Listo ✅\n` +
+            `${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")}\n` +
+            `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n` +
+            `${(s.city?.title || "Ciudad de Guatemala")}.\n` +
             `En breve te contactarán profesionales cercanos.\n\nServicio24`;
           await sendFinalInteractive(from, fallback);
           s.finalAcked = true;
@@ -639,10 +650,10 @@ app.post("/webhook", async (req, res) => {
       }
 
       // urgency answers
-      if (id === "urgency_now" || id === "urgency_later")) {
+      if (id === "urgency_now" || id === "urgency_later") {
         s.urgency = (id === "urgency_now") ? "now" : "later"; // internal flag only
         await sessSet(from, s);
-        // proceed to final lead creation
+        // proceed to final lead creation (same summary for ads & organic)
         const cityTitle = s.city?.title || "Ciudad de Guatemala";
         const finalText = await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
         s.state = "DONE";
@@ -661,8 +672,10 @@ app.post("/webhook", async (req, res) => {
           }
           const finalText =
             s.lastConfirmation ||
-            `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
-            `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
+            `Listo ✅\n` +
+            `${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")}\n` +
+            `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n` +
+            `${(s.city?.title || "Ciudad de Guatemala")}.\n` +
             `En breve te contactarán profesionales cercanos.\n\nServicio24`;
           await sendFinalInteractive(from, finalText);
           s.finalAcked = true;
