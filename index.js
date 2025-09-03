@@ -1,4 +1,4 @@
-// index.js — Servicio24 V2 Barzel Stable (Ads + Gracias + Urgency + Formatting)
+// index.js — Servicio24 V3 Cloud-Ready (Ads + Gracias single-use + Urgency + Formatting + Hardening)
 // - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
@@ -6,18 +6,36 @@
 // - Final confirmation is INTERACTIVE with single-use "Gracias" (no new lead)
 // - Urgency question after service selection (internal flag only, not shown to client in final text)
 // - Ads flow: prefill city/zone/service, confirm "Sí ✅ / Cambiar 🔄", city locked for ads
-// - Multi-line final message (with blank lines), unified across organic/ads
+// - Multi-line final message (with blank lines), unified across organic/ads (City then Zone)
 // - City shown before Zone everywhere
 // - No "Servicio24" inside body texts (only header/footer)
+// - Cloud hardening: helmet/morgan (optional), healthz/readyz, graceful shutdown, timeouts
 
 const express = require("express");
 const axios = require("axios");
 
+// ---- Optional hardening deps (won't crash if not installed) ----
+let helmet;
+try { helmet = require("helmet"); } catch { helmet = () => (_req,_res,next)=>next(); }
+let morgan;
+try { morgan = require("morgan"); } catch { morgan = () => (_req,_res,next)=>next(); }
+const http = require("http");
+// ---------------------------------------------------------------
+
 const app = express();
-app.use(express.json());
+
+// Trust reverse proxy headers (X-Forwarded-For/Proto) for LB/CDN
+app.set("trust proxy", true);
+
+// Security headers + lightweight logs (no-op if deps missing)
+app.use(helmet({ crossOriginResourcePolicy: false }));
+app.use(morgan(process.env.LOG_FORMAT || "tiny"));
+
+// JSON body limit
+app.use(express.json({ limit: process.env.JSON_LIMIT || "200kb" }));
 
 // ===== Config (with safe defaults) =====
-const GRAPH_VERSION      = process.env.GRAPH_VERSION || "23.0"; // set "23.0" (no 'v') in Render
+const GRAPH_VERSION      = process.env.GRAPH_VERSION || "23.0"; // set "23.0" (no 'v') in Render/ENV
 const SESSION_TTL_HOURS  = parseInt(process.env.SESSION_TTL_HOURS || "6", 10);
 const COOLDOWN_MINUTES   = parseInt(process.env.COOLDOWN_MINUTES  || "45", 10);
 const RESET_MAGIC        = (process.env.RESET_MAGIC || "oga").toLowerCase();
@@ -671,21 +689,21 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // final ack button — SINGLE USE: לא שולחים שוב אינטראקטיב
+      // final ack button — SINGLE USE: do NOT send interactive again
       if (id === "final_ack") {
         if (await coolHas(from)) {
-          if (s.finalAcked) return res.sendStatus(200); // כבר נלחץ פעם אחת
-      
-          // מסמנים שנלחץ ומעדכנים סשן
+          if (s.finalAcked) return res.sendStatus(200); // already pressed once
+
+          // mark single-use pressed
           s.finalAcked = true;
           await sessSet(from, s);
-      
-          // תגובת תודה קצרה (טקסט רגיל) כדי שהכפתור המקורי יישאר באפור
+
+          // send short thank-you as plain text so original button stays greyed out
           await sendText(from, "Gracias 🙏");
-      
+
           return res.sendStatus(200);
         } else {
-          // תם ה-cooldown → מתחילים זרימה חדשה
+          // cooldown expired → start a fresh flow
           await sessDel(from);
           const fresh = {
             city:null, zone:null, zoneConfirmed:false, serviceId:null,
@@ -718,9 +736,43 @@ app.post("/webhook", async (req, res) => {
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Ads + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use + Formatting)"),
+  res.status(200).send("🚀 Servicio24 — V3 Cloud-Ready (Ads + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use + Formatting)"),
 );
 
-// ===== Start =====
+// ===== Liveness/Readiness =====
+app.get("/healthz", (_req, res) => res.status(200).send("ok"));
+app.get("/readyz", async (_req, res) => {
+  if (redis) {
+    try {
+      const pong = await redis.ping();
+      if (pong !== "PONG") return res.status(503).send("redis not ready");
+    } catch {
+      return res.status(503).send("redis not ready");
+    }
+  }
+  return res.status(200).send("ready");
+});
+
+// ===== Start with timeouts + graceful shutdown =====
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT} [V2 Barzel Stable]`));
+const server = http.createServer(app);
+
+// timeouts to prevent hangs
+server.headersTimeout = parseInt(process.env.HEADERS_TIMEOUT_MS || "65000", 10);
+server.requestTimeout = parseInt(process.env.REQUEST_TIMEOUT_MS || "60000", 10);
+
+server.listen(PORT, () =>
+  console.log(`Server running on port ${PORT} [V3 Cloud-Ready]`)
+);
+
+function shutdown(signal) {
+  console.log(`\n${signal} received — shutting down gracefully...`);
+  server.close(async () => {
+    try { if (redis) await redis.quit(); } catch {}
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT",  () => shutdown("SIGINT"));
