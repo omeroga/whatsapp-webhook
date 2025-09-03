@@ -1,4 +1,4 @@
-// index.js — Servicio24 V2 Barzel Stable (Ads + Gracias + Urgency + Formatting)
+// index.js — Servicio24 V3 Barzel Stable (Ads + Gracias + Urgency + Formatting)
 // - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
@@ -200,94 +200,24 @@ function sendRoleButtons(to) {
   });
 }
 
-// city
-function sendCityMenu(to) {
-  return postWA({
-    messaging_product: "whatsapp",
-    to, type: "interactive",
-    interactive: {
-      type: "list",
-      header: { type: "text", text: "Selecciona tu ciudad" },
-      body:   { text: "Elige la ciudad donde necesitas el servicio:" },
-      footer: { text: "Servicio24" },
-      action: {
-        button: "Seleccionar ciudad",
-        sections: [{ title: "Ciudades", rows: CITIES.map(c => ({ id: c.id, title: c.title })) }]
-      }
-    }
-  });
-}
-
-// zona groups
-function sendZonaGroupButtons(to) {
-  return postWA({
-    messaging_product: "whatsapp",
-    to, type: "interactive",
-    interactive: {
-      type: "button",
-      header: { type: "text", text: "Zonas" },
-      body:   { text: "Selecciona tu zona:" },
-      footer: { text: "Servicio24" },
-      action: {
-        buttons: [
-          { type: "reply", reply: { id: "zona_group_1_10",  title: "Zonas 1-10" } },
-          { type: "reply", reply: { id: "zona_group_11_20", title: "Zonas 11-20" } },
-          { type: "reply", reply: { id: "zona_group_21_25", title: "Zonas 21-25" } },
-        ]
-      }
-    }
-  });
-}
-
-// zona list
-function sendZonaList(to, start, end) {
-  const rows = [];
-  for (let z = start; z <= end; z++) rows.push({ id: `zona_${z}`, title: `Zona ${z} ${ZONA_EMOJI[z] || ""}` });
-  return postWA({
-    messaging_product: "whatsapp",
-    to, type: "interactive",
-    interactive: {
-      type: "list",
-      header: { type: "text", text: `Zonas ${start}-${end}` },
-      body:   { text: "Selecciona tu zona exacta:" },
-      footer: { text: "Servicio24" },
-      action: { button: "Seleccionar zona", sections: [{ title: "Zonas", rows }] }
-    }
-  });
-}
-
-// zona confirm
-function sendZonaConfirm(to, z) {
-  const emoji = ZONA_EMOJI[z] || "";
-  return postWA({
-    messaging_product: "whatsapp",
-    to, type: "interactive",
-    interactive: {
-      type: "button",
-      header: { type: "text", text: `Zona seleccionada: ${z} ${emoji}` },
-      body:   { text: "¿Desea continuar con esta zona?" },
-      footer: { text: "Servicio24" },
-      action: {
-        buttons: [
-          { type: "reply", reply: { id: "zona_confirm", title: "Confirmar" } },
-          { type: "reply", reply: { id: "zona_change",  title: "Cambiar zona" } },
-        ]
-      }
-    }
-  });
-}
-
-// services list + consent
+// ===== services list + consent (City line, blank line, Zone line, blank line, consent) =====
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   const consent = "_Al continuar, aceptas que tus datos se compartan con profesionales cercanos y que puedas recibir sus llamadas o mensajes. Sin costo._";
+
+  const bodyText =
+    `Selecciona el profesional que necesitas:\n\n` +
+    `${cityTitle}\n\n` +
+    `Zona ${z} ${zEmoji}\n\n` +
+    `${consent}`;
+
   return postWA({
     messaging_product: "whatsapp",
     to, type: "interactive",
     interactive: {
       type: "list",
       header: { type: "text", text: "Servicios disponibles" },
-      body:   { text: `Selecciona el profesional que necesitas:\n${cityTitle} • Zona ${z} ${zEmoji}\n\n${consent}` },
+      body:   { text: bodyText },
       footer: { text: "Servicio24" },
       action: {
         button: "Seleccionar servicio",
@@ -593,9 +523,10 @@ app.post("/webhook", async (req, res) => {
           return res.sendStatus(200);
         }
         s.serviceId = id;
-        s.urgency = null;
+        s.urgency = null; // reset for new service choice
         s.finalAcked = false;
         await sessSet(from, s);
+        // ask urgency (last question)
         await sendUrgencyQuestion(from);
         return res.sendStatus(200);
       }
@@ -627,6 +558,7 @@ app.post("/webhook", async (req, res) => {
 
       // ADS confirm buttons
       if (id === "ad_yes") {
+        // accept the prefilled city/zone/service — go to urgency
         s.started = true;
         s.state = "MENU";
         s.zoneConfirmed = true;
@@ -636,7 +568,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
       if (id === "ad_change") {
-        // City locked; user can change zone first, then service
+        // City locked; ask zone first, then service
         s.state = "MENU";
         s.serviceId = null;
         s.urgency = null;
@@ -650,6 +582,7 @@ app.post("/webhook", async (req, res) => {
       if (id === "urgency_now" || id === "urgency_later") {
         s.urgency = (id === "urgency_now") ? "now" : "later"; // internal only
         await sessSet(from, s);
+        // proceed to final lead creation
         const cityTitle = s.city?.title || "Ciudad de Guatemala";
         const finalText = await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
         s.state = "DONE";
@@ -714,9 +647,10 @@ app.post("/webhook", async (req, res) => {
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Ads + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use + Formatting)"),
+  res.status(200).send("🚀 Servicio24 — V3 Barzel Stable (Ads + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use + Formatting)"),
 );
 
 // ===== Start =====
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT} [V2 Barzel Stable]`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT} [V3 Barzel Stable]`));
+```0
