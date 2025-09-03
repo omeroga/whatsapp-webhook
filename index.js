@@ -671,28 +671,21 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // final ack button — allow ONCE per cooldown window
+      // final ack button — SINGLE USE: לא שולחים שוב אינטראקטיב
       if (id === "final_ack") {
         if (await coolHas(from)) {
-          if (s.finalAcked) {
-            return res.sendStatus(200); // ignore further presses during cooldown
-          }
-          const finalText =
-            s.lastConfirmation ||
-            (
-              `Listo ✅\n\n` +
-              `${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ` +
-              `${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")}\n\n` +
-              `${(s.city?.title || "Ciudad de Guatemala")}\n\n` +
-              `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n\n` +
-              `En breve te contactarán profesionales cercanos.`
-            );
-          await sendFinalInteractive(from, finalText);
+          if (s.finalAcked) return res.sendStatus(200); // כבר נלחץ פעם אחת
+      
+          // מסמנים שנלחץ ומעדכנים סשן
           s.finalAcked = true;
           await sessSet(from, s);
+      
+          // תגובת תודה קצרה (טקסט רגיל) כדי שהכפתור המקורי יישאר באפור
+          await sendText(from, "Gracias 🙏");
+      
           return res.sendStatus(200);
         } else {
-          // cooldown expired → this press acts like fresh start prompt
+          // תם ה-cooldown → מתחילים זרימה חדשה
           await sessDel(from);
           const fresh = {
             city:null, zone:null, zoneConfirmed:false, serviceId:null,
