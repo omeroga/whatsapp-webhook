@@ -277,21 +277,32 @@ function sendZonaConfirm(to, z) {
   });
 }
 
-// services list + consent  (⬅️ תוקן: עיר בשורה, רווח, זונה בשורה)
+// services list + consent (City line, blank line, Zone line, blank line)
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   const consent = "_Al continuar, aceptas que tus datos se compartan con profesionales cercanos y que puedas recibir sus llamadas o mensajes. Sin costo._";
   return postWA({
     messaging_product: "whatsapp",
-    to, type: "interactive",
+    to,
+    type: "interactive",
     interactive: {
       type: "list",
       header: { type: "text", text: "Servicios disponibles" },
-      body:   { text: `Selecciona el profesional que necesitas:\n${cityTitle}\n\nZona ${z} ${zEmoji}\n\n${consent}` },
+      body:   { text:
+        `Selecciona el profesional que necesitas:\n\n` +
+        `${cityTitle}\n\n` +
+        `Zona ${z} ${zEmoji}\n\n` +
+        `${consent}`
+      },
       footer: { text: "Servicio24" },
       action: {
         button: "Seleccionar servicio",
-        sections: [{ title: "Profesionales", rows: SERVICES.map(s => ({ id: s.id, title: `${s.label} ${s.emoji}` })) }]
+        sections: [
+          {
+            title: "Profesionales",
+            rows: SERVICES.map(s => ({ id: s.id, title: `${s.label} ${s.emoji}` }))
+          }
+        ]
       }
     }
   });
