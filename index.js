@@ -1,10 +1,10 @@
-// index.js — Servicio24 V2 Barzel Stable (Final, Gracias no-echo during cooldown)
+// index.js — Servicio24 V2 Barzel Stable (Gracias + Urgency prompt)
 // - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
 // - Free-text flow + cooldown + magic reset
-// - Final confirmation is INTERACTIVE ("Gracias") sent ONCE at lead creation
-// - During cooldown: pressing "Gracias" sends NOTHING (just marks ack)
+// - Final confirmation is INTERACTIVE with single-use "Gracias" (no new lead)
+// - Urgency question after service selection (internal flag only, not shown to client in final text)
 // - No dotenv (Render injects env)
 
 const express = require("express");
@@ -14,10 +14,10 @@ const app = express();
 app.use(express.json());
 
 // ===== Config (with safe defaults) =====
-const GRAPH_VERSION     = process.env.GRAPH_VERSION || "23.0"; // set "23.0" (no 'v') in Render
-const SESSION_TTL_HOURS = parseInt(process.env.SESSION_TTL_HOURS || "6", 10);
-const COOLDOWN_MINUTES  = parseInt(process.env.COOLDOWN_MINUTES  || "45", 10);
-const RESET_MAGIC       = (process.env.RESET_MAGIC || "oga").toLowerCase();
+const GRAPH_VERSION      = process.env.GRAPH_VERSION || "23.0"; // set "23.0" (no 'v') in Render
+const SESSION_TTL_HOURS  = parseInt(process.env.SESSION_TTL_HOURS || "6", 10);
+const COOLDOWN_MINUTES   = parseInt(process.env.COOLDOWN_MINUTES  || "45", 10);
+const RESET_MAGIC        = (process.env.RESET_MAGIC || "oga").toLowerCase();
 
 const GRAPH_BASE = `https://graph.facebook.com/v${GRAPH_VERSION}`;
 const GRAPH_URL  = `${GRAPH_BASE}/${process.env.PHONE_NUMBER_ID}/messages`;
@@ -136,7 +136,9 @@ function sendInteractiveButton(to, headerText, bodyText, buttonId, buttonTitle) 
       header: { type: "text", text: headerText },
       body:   { text: bodyText },
       footer: { text: "Servicio24" },
-      action: { buttons: [{ type: "reply", reply: { id: buttonId, title: buttonTitle } }] }
+      action: {
+        buttons: [{ type: "reply", reply: { id: buttonId, title: buttonTitle } }]
+      }
     }
   });
 }
@@ -278,6 +280,27 @@ function sendServicesList(to, cityTitle, z) {
   });
 }
 
+// URGENCY question (after service selection)
+function sendUrgencyQuestion(to) {
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      header: { type: "text", text: "Prioridad" },
+      body:   { text: "¿El servicio es para ahora o puedes agendar?" },
+      footer: { text: "Servicio24" },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: "urgency_now",   title: "Sí, lo necesito ahora 🚀" } },
+          { type: "reply", reply: { id: "urgency_later", title: "No, puedo agendar 📆" } },
+        ],
+      },
+    },
+  });
+}
+
 // final interactive ("Gracias") — keeps keyboard closed
 function sendFinalInteractive(to, finalText) {
   return sendInteractiveButton(
@@ -289,7 +312,7 @@ function sendFinalInteractive(to, finalText) {
   );
 }
 
-// final lead — INTERACTIVE (sent once at lead creation)
+// final lead — INTERACTIVE (no plain text)
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
   const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
@@ -303,10 +326,12 @@ async function sendLeadReady(to, cityTitle, zone, serviceId) {
 
 // ===== Free-text behavior =====
 async function recoverUI(from, s) {
-  if (!s.started)       { await sendStartConfirm(from); return; }
-  if (!s.city)          { await sendCityMenu(from);     return; }
-  if (!s.zone)          { await sendZonaGroupButtons(from); return; }
-  if (!s.zoneConfirmed) { await sendZonaConfirm(from, s.zone); return; }
+  if (!s.started)         { await sendStartConfirm(from); return; }
+  if (!s.city)            { await sendCityMenu(from);     return; }
+  if (!s.zone)            { await sendZonaGroupButtons(from); return; }
+  if (!s.zoneConfirmed)   { await sendZonaConfirm(from, s.zone); return; }
+  // if service chosen but urgency missing → ask urgency
+  if (s.serviceId && !s.urgency) { await sendUrgencyQuestion(from); return; }
   const cityTitle = s.city?.title || "Ciudad de Guatemala";
   await sendServicesList(from, cityTitle, s.zone);
 }
@@ -330,13 +355,13 @@ app.post("/webhook", async (req, res) => {
     if (!msg) return res.sendStatus(200);
 
     const from = msg.from;
-    const interactive = msg.interactive; // need early
 
     // ensure session
     let s = await sessGet(from);
     if (!s) {
       s = {
         city:null, zone:null, zoneConfirmed:false, serviceId:null,
+        urgency:null, // "now" | "later"
         started:false, state:"MENU", lastConfirmation:null, finalAcked:false
       };
       await sessSet(from, s);
@@ -350,7 +375,7 @@ app.post("/webhook", async (req, res) => {
         await sessDel(from);
         const fresh = {
           city:null, zone:null, zoneConfirmed:false, serviceId:null,
-          started:false, state:"MENU", lastConfirmation:null, finalAcked:false
+          urgency:null, started:false, state:"MENU", lastConfirmation:null, finalAcked:false
         };
         await sessSet(from, fresh);
         await sendStartConfirm(from);
@@ -358,22 +383,27 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // DONE + cooldown logic (NO echo messages during cooldown)
+    // DONE + cooldown logic
     if (s.state === "DONE") {
       if (await coolHas(from)) {
-        // If user presses "Gracias" during cooldown: only mark ack (once), send nothing.
-        if (interactive?.type === "button_reply" && interactive.button_reply?.id === "final_ack") {
-          if (!s.finalAcked) { s.finalAcked = true; await sessSet(from, s); }
-          return res.sendStatus(200);
+        if (s.finalAcked) {
+          return res.sendStatus(200); // ignore noise during cooldown
         }
-        // Any other message during cooldown: ignore silently.
+        const fallback =
+          s.lastConfirmation ||
+          `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
+          `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
+          `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+        await sendFinalInteractive(from, fallback);
+        s.finalAcked = true;
+        await sessSet(from, s);
         return res.sendStatus(200);
       } else {
         // cooldown expired → start fresh
         await sessDel(from);
         const fresh = {
           city:null, zone:null, zoneConfirmed:false, serviceId:null,
-          started:false, state:"MENU", lastConfirmation:null, finalAcked:false
+          urgency:null, started:false, state:"MENU", lastConfirmation:null, finalAcked:false
         };
         await sessSet(from, fresh);
         await sendStartConfirm(from);
@@ -387,15 +417,17 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // ==== Interactive handling ====
+    const interactive = msg.interactive;
+
+    // list reply
     if (interactive?.type === "list_reply") {
       const id = interactive.list_reply?.id;
 
       // city
       if (CITIES.some(c => c.id === id)) {
         const city = CITIES.find(c => c.id === id);
-        s.city = city; s.zone = null; s.zoneConfirmed = false; s.serviceId = null; s.started = true; s.state = "MENU";
-        s.finalAcked = false;
+        s.city = city; s.zone = null; s.zoneConfirmed = false; s.serviceId = null; s.urgency = null;
+        s.started = true; s.state = "MENU"; s.finalAcked = false;
         await sessSet(from, s);
         await sendZonaGroupButtons(from);
         return res.sendStatus(200);
@@ -405,8 +437,8 @@ app.post("/webhook", async (req, res) => {
       if (id?.startsWith("zona_")) {
         const z = parseInt(id.split("_")[1], 10);
         if (z >= 1 && z <= 25) {
-          s.zone = z; s.zoneConfirmed = false; s.state = "MENU";
-          s.finalAcked = false;
+          s.zone = z; s.zoneConfirmed = false; s.serviceId = null; s.urgency = null;
+          s.state = "MENU"; s.finalAcked = false;
           await sessSet(from, s);
           await sendZonaConfirm(from, z);
           return res.sendStatus(200);
@@ -421,17 +453,16 @@ app.post("/webhook", async (req, res) => {
           return res.sendStatus(200);
         }
         s.serviceId = id;
-        const cityTitle = s.city?.title || "Ciudad de Guatemala";
-        const finalText = await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
-        s.state = "DONE";
-        s.lastConfirmation = finalText;
-        s.finalAcked = false;     // allow one ack press (no response) during cooldown
+        s.urgency = null; // reset for new service choice
+        s.finalAcked = false;
         await sessSet(from, s);
-        await coolSet(from);      // start cooldown
+        // ask urgency (last question)
+        await sendUrgencyQuestion(from);
         return res.sendStatus(200);
       }
     }
 
+    // button reply
     if (interactive?.type === "button_reply") {
       const id = interactive.button_reply?.id;
 
@@ -455,8 +486,48 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // final ack button during active flow (shouldn't happen) → ignore
-      if (id === "final_ack") return res.sendStatus(200);
+      // urgency answers
+      if (id === "urgency_now" || id === "urgency_later") {
+        s.urgency = (id === "urgency_now") ? "now" : "later"; // internal flag only
+        await sessSet(from, s);
+        // proceed to final lead creation
+        const cityTitle = s.city?.title || "Ciudad de Guatemala";
+        const finalText = await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
+        s.state = "DONE";
+        s.lastConfirmation = finalText;
+        s.finalAcked = false;     // allow exactly one final interactive echo
+        await sessSet(from, s);
+        await coolSet(from);      // start cooldown after lead creation
+        return res.sendStatus(200);
+      }
+
+      // final ack button — allow ONCE per cooldown window
+      if (id === "final_ack") {
+        if (await coolHas(from)) {
+          if (s.finalAcked) {
+            return res.sendStatus(200); // ignore further presses during cooldown
+          }
+          const finalText =
+            s.lastConfirmation ||
+            `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
+            `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
+            `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+          await sendFinalInteractive(from, finalText);
+          s.finalAcked = true;
+          await sessSet(from, s);
+          return res.sendStatus(200);
+        } else {
+          // cooldown expired → this press acts like fresh start prompt
+          await sessDel(from);
+          const fresh = {
+            city:null, zone:null, zoneConfirmed:false, serviceId:null,
+            urgency:null, started:false, state:"MENU", lastConfirmation:null, finalAcked:false
+          };
+          await sessSet(from, fresh);
+          await sendStartConfirm(from);
+          return res.sendStatus(200);
+        }
+      }
     }
 
     // fallback if city missing
@@ -471,7 +542,7 @@ app.post("/webhook", async (req, res) => {
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Emojis + Cooldown + Reset, Gracias no-echo)"),
+  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use)"),
 );
 
 // ===== Start =====
