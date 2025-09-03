@@ -1,10 +1,11 @@
-// index.js — Servicio24 V2 Barzel Stable (Gracias + Urgency prompt)
+// index.js — Servicio24 V2 Barzel Stable (Ads + Gracias + Urgency)
 // - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
 // - Free-text flow + cooldown + magic reset
 // - Final confirmation is INTERACTIVE with single-use "Gracias" (no new lead)
 // - Urgency question after service selection (internal flag only, not shown to client in final text)
+// - Ads flow: prefill city/zone/service, confirm "Sí ✅ / Cambiar 🔄", city locked for ads
 // - No dotenv (Render injects env)
 
 const express = require("express");
@@ -114,6 +115,22 @@ const SERVICES = [
   { id: "srv_mudanza",      label: "Mudanza",            emoji: "🚚" },
 ];
 const SERVICE_LABEL = Object.fromEntries(SERVICES.map(s => [s.id, s.label]));
+const SERVICE_NAME_TO_ID = (() => {
+  const map = {};
+  for (const s of SERVICES) map[s.label.toLowerCase()] = s.id;
+  // alias comunes
+  map["plomero"] = "srv_plomero";
+  map["electricista"] = "srv_electricista";
+  map["cerrajero"] = "srv_cerrajero";
+  map["aire"] = "srv_aire";
+  map["aire acondicionado"] = "srv_aire";
+  map["mecanico"] = "srv_mecanico";
+  map["mecánico"] = "srv_mecanico";
+  map["grua"] = "srv_grua";
+  map["grúa"] = "srv_grua";
+  map["mudanza"] = "srv_mudanza";
+  return map;
+})();
 
 const ZONA_EMOJI = {
   1:"🏛️",2:"🍺",3:"🕊️",4:"💰",5:"🏟️",6:"🏘️",7:"🏺",8:"🚌",9:"🏨",10:"🎉",
@@ -136,9 +153,7 @@ function sendInteractiveButton(to, headerText, bodyText, buttonId, buttonTitle) 
       header: { type: "text", text: headerText },
       body:   { text: bodyText },
       footer: { text: "Servicio24" },
-      action: {
-        buttons: [{ type: "reply", reply: { id: buttonId, title: buttonTitle } }]
-      }
+      action: { buttons: [{ type: "reply", reply: { id: buttonId, title: buttonTitle } }] }
     }
   });
 }
@@ -300,6 +315,7 @@ function sendUrgencyQuestion(to) {
     },
   });
 }
+
 // final interactive ("Gracias") — keeps keyboard closed
 function sendFinalInteractive(to, finalText) {
   return sendInteractiveButton(
@@ -314,7 +330,7 @@ function sendFinalInteractive(to, finalText) {
 // final lead — INTERACTIVE (no plain text)
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
-  const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
+  const serviceText = svc ? `${svc.label} ${s.emoji || ""}`.trim() : "Profesional 👤";
   const zoneEmoji = ZONA_EMOJI[zone] || "";
   const finalText =
     `Listo ✅  ${serviceText} • Zona ${zone} ${zoneEmoji} • ${cityTitle}.\n` +
@@ -323,14 +339,102 @@ async function sendLeadReady(to, cityTitle, zone, serviceId) {
   return finalText;
 }
 
+// ===== ADS: parsing prefill from first text =====
+function parseAdParams(rawText) {
+  if (!rawText) return null;
+  const text = String(rawText).trim();
+
+  // Expect pattern like: "#ad city=city_guatemala&zone=7&service=srv_electricista"
+  // Also accept service/e.g. "service=electricista"
+  const m = text.match(/#ad\s+(.+)$/i);
+  if (!m) return null;
+  const qs = m[1];
+
+  const params = {};
+  qs.split("&").forEach(kv => {
+    const [k, v] = kv.split("=").map(x => (x||"").trim());
+    if (!k) return;
+    params[k.toLowerCase()] = decodeURIComponent((v||"").trim());
+  });
+
+  let cityId = params.city || params.ciudad || params.c;
+  let zoneStr = params.zone || params.zona || params.z;
+  let service = params.service || params.servicio || params.s;
+
+  // normalize service
+  let serviceId = null;
+  if (service) {
+    const sv = service.toLowerCase();
+    serviceId = SERVICE_LABEL[sv] ? sv : (SERVICE_NAME_TO_ID[sv] || null);
+    if (!serviceId && sv.startsWith("srv_")) serviceId = sv;
+  }
+
+  const zone = zoneStr ? parseInt(zoneStr, 10) : null;
+
+  // normalize city
+  let city = null;
+  if (cityId) {
+    const found = CITIES.find(c => c.id === cityId);
+    if (found) city = found;
+  }
+  // default if missing/invalid (we lock to this if ad source)
+  if (!city) city = CITIES[0];
+
+  return {
+    city,
+    zone: (zone && zone >=1 && zone <=25) ? zone : null,
+    serviceId: (serviceId && SERVICE_LABEL[serviceId]) ? serviceId : null
+  };
+}
+
+// ADS confirm screen
+function sendAdConfirm(to, cityTitle, zone, serviceId) {
+  const svc = SERVICES.find(s => s.id === serviceId);
+  const svcText = svc ? svc.label : "Profesional";
+  const zEmoji = ZONA_EMOJI[zone] || "";
+  const body = `¿Buscas *${svcText}* en *${cityTitle}*, Zona ${zone} ${zEmoji}?`;
+  return postWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      header: { type: "text", text: "Confirmación" },
+      body:   { text: body },
+      footer: { text: "Servicio24" },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: "ad_yes",    title: "Sí ✅" } },
+          { type: "reply", reply: { id: "ad_change", title: "Cambiar 🔄" } },
+        ]
+      }
+    }
+  });
+}
+
 // ===== Free-text behavior =====
 async function recoverUI(from, s) {
+  // If came from ad and city locked, skip city step
   if (!s.started)         { await sendStartConfirm(from); return; }
-  if (!s.city)            { await sendCityMenu(from);     return; }
+
+  // ADS flow: if ad source and missing selections, drive accordingly
+  if (s.source === "ad") {
+    if (!s.zone)          { await sendZonaGroupButtons(from); return; }
+    if (!s.zoneConfirmed) { await sendZonaConfirm(from, s.zone); return; }
+    if (!s.serviceId)     {
+      const cityTitle = s.city?.title || "Ciudad de Guatemala";
+      await sendServicesList(from, cityTitle, s.zone);
+      return;
+    }
+    if (!s.urgency)       { await sendUrgencyQuestion(from); return; }
+  }
+
+  // Organic flow
+  if (!s.city)            { await sendCityMenu(from); return; }
   if (!s.zone)            { await sendZonaGroupButtons(from); return; }
   if (!s.zoneConfirmed)   { await sendZonaConfirm(from, s.zone); return; }
-  // if service chosen but urgency missing → ask urgency
   if (s.serviceId && !s.urgency) { await sendUrgencyQuestion(from); return; }
+
   const cityTitle = s.city?.title || "Ciudad de Guatemala";
   await sendServicesList(from, cityTitle, s.zone);
 }
@@ -361,57 +465,79 @@ app.post("/webhook", async (req, res) => {
       s = {
         city:null, zone:null, zoneConfirmed:false, serviceId:null,
         urgency:null, // "now" | "later"
-        started:false, state:"MENU", lastConfirmation:null, finalAcked:false
+        started:false, state:"MENU", lastConfirmation:null, finalAcked:false,
+        source:null,    // "ad" | null
+        adLockCity:false
       };
       await sessSet(from, s);
     }
 
     // MAGIC RESET — anytime
     if (msg.type === "text") {
-      const body = (msg.text?.body || "").trim().toLowerCase();
+      const bodyRaw = (msg.text?.body || "");
+      const body = bodyRaw.trim().toLowerCase();
+
       if (body === RESET_MAGIC) {
         await coolDel(from);
         await sessDel(from);
         const fresh = {
           city:null, zone:null, zoneConfirmed:false, serviceId:null,
-          urgency:null, started:false, state:"MENU", lastConfirmation:null, finalAcked:false
+          urgency:null, started:false, state:"MENU", lastConfirmation:null, finalAcked:false,
+          source:null, adLockCity:false
         };
         await sessSet(from, fresh);
         await sendStartConfirm(from);
         return res.sendStatus(200);
       }
-    }
 
-    // DONE + cooldown logic
-    if (s.state === "DONE") {
-      if (await coolHas(from)) {
-        if (s.finalAcked) {
-          return res.sendStatus(200); // ignore noise during cooldown
+      // First text → try detect Ad params
+      if (!s.started) {
+        const ad = parseAdParams(bodyRaw);
+        if (ad && ad.city && ad.zone && ad.serviceId) {
+          // Prefill from ads
+          s.started = true;
+          s.source = "ad";
+          s.adLockCity = true;
+          s.city = ad.city;
+          s.zone = ad.zone;
+          s.zoneConfirmed = true; // from ad
+          s.serviceId = ad.serviceId;
+          s.urgency = null;
+          s.state = "MENU";
+          s.finalAcked = false;
+          await sessSet(from, s);
+          await sendAdConfirm(from, s.city.title, s.zone, s.serviceId);
+          return res.sendStatus(200);
         }
-        const fallback =
-          s.lastConfirmation ||
-          `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
-          `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
-          `En breve te contactarán profesionales cercanos.\n\nServicio24`;
-        await sendFinalInteractive(from, fallback);
-        s.finalAcked = true;
-        await sessSet(from, s);
-        return res.sendStatus(200);
-      } else {
-        // cooldown expired → start fresh
-        await sessDel(from);
-        const fresh = {
-          city:null, zone:null, zoneConfirmed:false, serviceId:null,
-          urgency:null, started:false, state:"MENU", lastConfirmation:null, finalAcked:false
-        };
-        await sessSet(from, fresh);
-        await sendStartConfirm(from);
-        return res.sendStatus(200);
       }
-    }
 
-    // Regular text → show current UI
-    if (msg.type === "text") {
+      // If DONE
+      if (s.state === "DONE") {
+        if (await coolHas(from)) {
+          if (s.finalAcked) return res.sendStatus(200);
+          const fallback =
+            s.lastConfirmation ||
+            `Listo ✅  ${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")} • ` +
+            `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")} • ${(s.city?.title || "Ciudad de Guatemala")}.\n` +
+            `En breve te contactarán profesionales cercanos.\n\nServicio24`;
+          await sendFinalInteractive(from, fallback);
+          s.finalAcked = true;
+          await sessSet(from, s);
+          return res.sendStatus(200);
+        } else {
+          await sessDel(from);
+          const fresh = {
+            city:null, zone:null, zoneConfirmed:false, serviceId:null,
+            urgency:null, started:false, state:"MENU", lastConfirmation:null, finalAcked:false,
+            source:null, adLockCity:false
+          };
+          await sessSet(from, fresh);
+          await sendStartConfirm(from);
+          return res.sendStatus(200);
+        }
+      }
+
+      // Regular text → show current UI
       await recoverUI(from, s);
       return res.sendStatus(200);
     }
@@ -422,8 +548,13 @@ app.post("/webhook", async (req, res) => {
     if (interactive?.type === "list_reply") {
       const id = interactive.list_reply?.id;
 
-      // city
+      // city (only if not ad-locked)
       if (CITIES.some(c => c.id === id)) {
+        if (s.adLockCity) {
+          // ignore changing city in ad flow; push to zone instead
+          await sendZonaGroupButtons(from);
+          return res.sendStatus(200);
+        }
         const city = CITIES.find(c => c.id === id);
         s.city = city; s.zone = null; s.zoneConfirmed = false; s.serviceId = null; s.urgency = null;
         s.started = true; s.state = "MENU"; s.finalAcked = false;
@@ -468,7 +599,7 @@ app.post("/webhook", async (req, res) => {
       if (id === "start_yes")  { s.started = true; s.state = "MENU"; s.finalAcked = false; await sessSet(from, s); await sendRoleButtons(from); return res.sendStatus(200); }
       if (id === "start_no")   { await sendText(from, "Operación cancelada.\n\nServicio24"); return res.sendStatus(200); }
 
-      if (id === "role_cliente") { s.finalAcked = false; await sessSet(from, s); await sendCityMenu(from); return res.sendStatus(200); }
+      if (id === "role_cliente") { s.finalAcked = false; await sessSet(from, s); s.adLockCity ? await sendZonaGroupButtons(from) : await sendCityMenu(from); return res.sendStatus(200); }
       if (id === "role_tecnico") { await sendText(from, "La función de *Técnico* está en construcción...\n\nServicio24"); return res.sendStatus(200); }
 
       if (id === "zona_group_1_10")  { s.finalAcked = false; await sessSet(from, s); await sendZonaList(from, 1, 10);  return res.sendStatus(200); }
@@ -485,8 +616,30 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
+      // ADS confirm buttons
+      if (id === "ad_yes") {
+        // accept the prefilled city/zone/service — go to urgency
+        s.started = true;
+        s.state = "MENU";
+        s.zoneConfirmed = true;
+        s.finalAcked = false;
+        await sessSet(from, s);
+        await sendUrgencyQuestion(from);
+        return res.sendStatus(200);
+      }
+      if (id === "ad_change") {
+        // City locked; ask zone first, then service
+        s.state = "MENU";
+        s.serviceId = null;
+        s.urgency = null;
+        s.finalAcked = false;
+        await sessSet(from, s);
+        await sendZonaGroupButtons(from);
+        return res.sendStatus(200);
+      }
+
       // urgency answers
-      if (id === "urgency_now" || id === "urgency_later") {
+      if (id === "urgency_now" || id === "urgency_later")) {
         s.urgency = (id === "urgency_now") ? "now" : "later"; // internal flag only
         await sessSet(from, s);
         // proceed to final lead creation
@@ -520,7 +673,8 @@ app.post("/webhook", async (req, res) => {
           await sessDel(from);
           const fresh = {
             city:null, zone:null, zoneConfirmed:false, serviceId:null,
-            urgency:null, started:false, state:"MENU", lastConfirmation:null, finalAcked:false
+            urgency:null, started:false, state:"MENU", lastConfirmation:null, finalAcked:false,
+            source:null, adLockCity:false
           };
           await sessSet(from, fresh);
           await sendStartConfirm(from);
@@ -529,8 +683,15 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // fallback if city missing
-    if (!s.city) { await sendCityMenu(from); return res.sendStatus(200); }
+    // fallback if city missing (respect ad lock)
+    if (!s.city) {
+      if (s.adLockCity && s.city) {
+        await sendZonaGroupButtons(from);
+      } else {
+        await sendCityMenu(from);
+      }
+      return res.sendStatus(200);
+    }
 
     return res.sendStatus(200);
   } catch (err) {
@@ -541,7 +702,7 @@ app.post("/webhook", async (req, res) => {
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use)"),
+  res.status(200).send("🚀 Servicio24 — V2 Barzel Stable (Ads + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use)"),
 );
 
 // ===== Start =====
