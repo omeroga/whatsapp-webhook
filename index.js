@@ -346,14 +346,14 @@ function sendUrgencyQuestion(to) {
   });
 }
 
-// ===== FINAL interactive ("Gracias") — keeps keyboard closed =====
+// ===== FINAL interactive ("Confirmar") — keeps keyboard closed =====
 function sendFinalInteractive(to, finalText) {
   return sendInteractiveButton(
     to,
     "Servicio24",
     finalText,
     "final_ack",
-    "Gracias 🙏"
+    "Confirmar ✅"
   );
 }
 
@@ -687,16 +687,21 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // final ack button — SINGLE USE (no re-sending interactive)
+      // final ack button — SINGLE USE: לא שולחים שוב אינטראקטיב
       if (id === "final_ack") {
         if (await coolHas(from)) {
-          if (s.finalAcked) return res.sendStatus(200);
+          if (s.finalAcked) return res.sendStatus(200); // כבר נלחץ פעם אחת
+      
+          // מסמנים שנלחץ ומעדכנים סשן
           s.finalAcked = true;
           await sessSet(from, s);
-          await sendText(from, "Gracias 🙏");
+      
+          // תגובת אישור קצרה (טקסט רגיל) כדי שהכפתור המקורי יישאר באפור
+          await sendText(from, "Confirmar ✅");
+      
           return res.sendStatus(200);
         } else {
-          // cooldown expired → fresh start
+          // תם ה-cooldown → מתחילים זרימה חדשה
           await sessDel(from);
           const fresh = {
             city:null, zone:null, zoneConfirmed:false, serviceId:null,
