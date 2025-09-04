@@ -1,14 +1,15 @@
-// index.js — Servicio24 V3.1 Portable (Ads + Gracias single-use + Urgency + DB + Formatting)
+// index.js — Servicio24 V3.1 Barzel Stable (Ads + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use + Supabase)
 // - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
 // - Free-text flow + cooldown + magic reset
-// - Final confirmation: INTERACTIVE once + Gracias single-use (no new card resend)
-// - Urgency question after service selection (internal flag only)
+// - Final confirmation is INTERACTIVE with single-use "Gracias" (no new lead)
+// - Urgency question after service selection (internal flag only, not shown to client in final text)
 // - Ads flow: prefill city/zone/service, confirm "Sí ✅ / Cambiar 🔄", city locked for ads
-// - Multi-line final message (with blank lines) — City THEN Zone (unified across flows)
+// - Multi-line final message (with blank lines), unified across organic/ads
+// - City shown before Zone everywhere
 // - No "Servicio24" inside body texts (only header/footer)
-// - Built-in DB layer (Postgres). If no DATABASE_URL -> NO-DB mode (safe logs, no throw)
+// - Supabase: persist leads (safe no-op if not configured), tiny retry with backoff
 
 const express = require("express");
 const axios = require("axios");
@@ -34,62 +35,6 @@ const AUTH = {
 if (!process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) {
   console.error("❌ Missing env: WHATSAPP_TOKEN or PHONE_NUMBER_ID");
   process.exit(1);
-}
-
-// ===== Built-in DB layer (Postgres) =====
-const NO_DB = !process.env.DATABASE_URL;
-let pg = null, pool = null;
-
-if (!NO_DB) {
-  try {
-    pg = require("pg");
-    pool = new pg.Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false,
-      max: parseInt(process.env.DB_POOL_MAX || "5", 10),
-      idleTimeoutMillis: 30000,
-    });
-    pool.on("error", (err) => console.error("[DB] pool error:", err?.message || err));
-    console.log("[DB] Connected pool ready");
-  } catch (e) {
-    console.warn("[DB] pg not installed or failed to init. Running NO-DB mode.", e?.message || e);
-  }
-}
-
-async function dbSaveLead(lead) {
-  // lead = { wa_from, city_id, city_title, zone, service_id, service_label, urgency, source }
-  if (!pool) {
-    console.log("[DB] NO-DB mode, lead:", lead);
-    return { ok: true, noop: true };
-  }
-  const q = `
-    INSERT INTO leads
-      (wa_from, city_id, city_title, zone, service_id, service_label, urgency, source, created_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NOW())
-    RETURNING id
-  `;
-  const vals = [
-    lead.wa_from || null,
-    lead.city_id || null,
-    lead.city_title || null,
-    lead.zone ?? null,
-    lead.service_id || null,
-    lead.service_label || null,
-    lead.urgency || null,
-    lead.source || null,
-  ];
-  const { rows } = await pool.query(q, vals);
-  return { ok: true, id: rows?.[0]?.id };
-}
-
-async function dbHealth() {
-  if (!pool) return { ok: true, noop: true };
-  try {
-    await pool.query("SELECT 1");
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: e?.message || String(e) };
-  }
 }
 
 // ===== Redis sessions (fallback to memory) =====
@@ -176,7 +121,7 @@ const SERVICE_LABEL = Object.fromEntries(SERVICES.map(s => [s.id, s.label]));
 const SERVICE_NAME_TO_ID = (() => {
   const map = {};
   for (const s of SERVICES) map[s.label.toLowerCase()] = s.id;
-  // alias comunes
+  // aliases comunes
   map["plomero"] = "srv_plomero";
   map["electricista"] = "srv_electricista";
   map["cerrajero"] = "srv_cerrajero";
@@ -195,6 +140,53 @@ const ZONA_EMOJI = {
   11:"🛒",12:"🧰",13:"✈️",14:"🏢",15:"🎓",16:"🏰",17:"🏭",18:"🛣️",19:"🔧",20:"🏚️",
   21:"🚧",22:"📦",23:"🚋",24:"🏗️",25:"🌳"
 };
+
+// ===== Supabase (optional but recommended) =====
+let supabase = null;
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+// Prefer service-role key if provided; else fall back to generic key (needs RLS insert policy)
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_KEY || "";
+if (SUPABASE_URL && SUPABASE_KEY) {
+  try {
+    // Lazy require to avoid hard dependency if not configured
+    const { createClient } = require("@supabase/supabase-js");
+    supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    console.log("[Supabase] client ready");
+  } catch (e) {
+    console.warn("[Supabase] @supabase/supabase-js not installed — skipping DB. Install with: npm i @supabase/supabase-js");
+  }
+}
+
+// Persist lead (safe no-op if not configured). Retries x3 with small backoff.
+async function persistLead({ phone, city, zona, serviceId, urgency }) {
+  if (!supabase) return { ok: false, skipped: true };
+  const service = SERVICE_LABEL[serviceId] || serviceId || null;
+
+  const payload = {
+    phone: String(phone || ""),
+    city: String(city || ""),
+    zona: Number.isFinite(zona) ? zona : null,
+    service: service ? String(service) : null,
+    urgency: urgency ? String(urgency) : null,
+  };
+
+  let attempt = 0;
+  while (attempt < 3) {
+    try {
+      const { error } = await supabase.from("leads").insert(payload);
+      if (error) throw error;
+      return { ok: true };
+    } catch (err) {
+      attempt++;
+      const ms = 200 * Math.pow(2, attempt); // 400, 800, 1600
+      console.warn(`[Supabase] insert failed (attempt ${attempt}):`, err?.message || err);
+      await new Promise(r => setTimeout(r, ms));
+    }
+  }
+  return { ok: false };
+}
 
 // ===== WhatsApp helpers =====
 function postWA(payload) { return axios.post(GRAPH_URL, payload, AUTH); }
@@ -596,7 +588,6 @@ app.post("/webhook", async (req, res) => {
               `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n\n` +
               `En breve te contactarán profesionales cercanos.`
             );
-          // אל תשלח שוב כרטיס אינטראקטיבי — רק אם טרם נשלח (finalAcked=false) בהקשר Gracias נטפל בנפרד
           await sendFinalInteractive(from, fallback);
           s.finalAcked = true;
           await sessSet(from, s);
@@ -648,7 +639,7 @@ app.post("/webhook", async (req, res) => {
           s.zone = z; s.zoneConfirmed = false; s.serviceId = null; s.urgency = null;
           s.state = "MENU"; s.finalAcked = false;
           await sessSet(from, s);
-        await sendZonaConfirm(from, z);
+          await sendZonaConfirm(from, z);
           return res.sendStatus(200);
         }
       }
@@ -718,45 +709,41 @@ app.post("/webhook", async (req, res) => {
       if (id === "urgency_now" || id === "urgency_later") {
         s.urgency = (id === "urgency_now") ? "now" : "later"; // internal only
         await sessSet(from, s);
-
         const cityTitle = s.city?.title || "Ciudad de Guatemala";
+
+        // 1) Send the client-facing final interactive
         const finalText = await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
 
-        // Save lead to DB (safe no-throw)
-        try {
-          const svc = SERVICES.find(x => x.id === s.serviceId);
-          await dbSaveLead({
-            wa_from: from,
-            city_id: s.city?.id || null,
-            city_title: cityTitle,
-            zone: s.zone,
-            service_id: s.serviceId || null,
-            service_label: svc?.label || null,
-            urgency: s.urgency || null,
-            source: s.source || "organic", // "ad" if came from ads
-          });
-        } catch (e) {
-          console.error("[DB] saveLead error:", e?.message || e);
-        }
+        // 2) Persist lead (best-effort)
+        persistLead({
+          phone: from,
+          city: cityTitle,
+          zona: s.zone,
+          serviceId: s.serviceId,
+          urgency: s.urgency
+        }).then(r => {
+          if (!r.ok && !r.skipped) console.warn("[Supabase] persist failed after retries.");
+        }).catch(() => {});
 
+        // 3) Close the flow
         s.state = "DONE";
         s.lastConfirmation = finalText;
-        s.finalAcked = false;     // allow one interactive echo via Gracias
+        s.finalAcked = false;     // allow one final interactive echo (we won't resend a new card)
         await sessSet(from, s);
         await coolSet(from);      // start cooldown
         return res.sendStatus(200);
       }
 
-      // final ack button — SINGLE USE: do NOT resend interactive; reply with plain text only
+      // final ack button — SINGLE USE (no re-sending interactive)
       if (id === "final_ack") {
         if (await coolHas(from)) {
-          if (s.finalAcked) return res.sendStatus(200); // already pressed once during cooldown
+          if (s.finalAcked) return res.sendStatus(200); // already pressed once
           s.finalAcked = true;
           await sessSet(from, s);
-          await sendText(from, "Gracias 🙏");
+          await sendText(from, "Gracias 🙏"); // plain text keeps original card greyed-out
           return res.sendStatus(200);
         } else {
-          // cooldown expired → this press acts like fresh start prompt
+          // cooldown expired → fresh start
           await sessDel(from);
           const fresh = {
             city:null, zone:null, zoneConfirmed:false, serviceId:null,
@@ -789,15 +776,11 @@ app.post("/webhook", async (req, res) => {
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 — V3.1 Portable (Ads + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use + DB + Formatting)"),
+  res
+    .status(200)
+    .send("🚀 Servicio24 — V3.1 Barzel Stable (Ads + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use + Supabase)"),
 );
-
-// Optional DB health
-app.get("/health/db", async (_req, res) => {
-  const h = await dbHealth();
-  res.status(h.ok ? 200 : 500).json(h);
-});
 
 // ===== Start =====
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT} [V3.1 Portable]`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT} [V3.1 Barzel Stable]`));
