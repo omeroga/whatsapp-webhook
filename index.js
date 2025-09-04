@@ -1,27 +1,14 @@
-// index.js — Servicio24 V3.1 Barzel Stable
-// Features:
-// - Ads + Organic flows (city locked for Ads)
-// - Multiline final message (City first, then Zone) with blank lines
-// - Urgency question (Sí/No) after service selection
-// - Single-use "Gracias" final acknowledgement (no re-sending interactive on ack)
+// index.js — Servicio24 V3.1 Portable (Ads + Gracias single-use + Urgency + DB + Formatting)
+// - Graph API v${GRAPH_VERSION}
 // - Redis sessions (fallback to memory)
 // - Full emojis for ZONAS & services
-// - Free-text recovery + cooldown + magic reset
-// - Structured JSON logging
-// - Input validation (city/zone/service/interactive ids)
-// - Idempotency (dedupe incoming WhatsApp message IDs)
-// - Local rate limiting (per-user)
-// - Robust Graph API call with retry+exponential backoff
+// - Free-text flow + cooldown + magic reset
+// - Final confirmation: INTERACTIVE once + Gracias single-use (no new card resend)
+// - Urgency question after service selection (internal flag only)
+// - Ads flow: prefill city/zone/service, confirm "Sí ✅ / Cambiar 🔄", city locked for ads
+// - Multi-line final message (with blank lines) — City THEN Zone (unified across flows)
 // - No "Servicio24" inside body texts (only header/footer)
-//
-// Env (Render):
-//   WHATSAPP_TOKEN, PHONE_NUMBER_ID, VERIFY_TOKEN, REDIS_URL (optional), GRAPH_VERSION (e.g. "23.0")
-//   SESSION_TTL_HOURS, COOLDOWN_MINUTES, RESET_MAGIC
-//
-// Notes:
-// - Keep GRAPH_VERSION without leading "v" (e.g. 23.0) — code adds the "v".
-// - If Redis missing, memory fallback is used for sessions, cooldown, idempotency & rate limit.
-// - Safe defaults included.
+// - Built-in DB layer (Postgres). If no DATABASE_URL -> NO-DB mode (safe logs, no throw)
 
 const express = require("express");
 const axios = require("axios");
@@ -29,15 +16,11 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// ===== Config =====
-const GRAPH_VERSION     = process.env.GRAPH_VERSION || "23.0";
-const SESSION_TTL_HOURS = parseInt(process.env.SESSION_TTL_HOURS || "6", 10);
-const COOLDOWN_MINUTES  = parseInt(process.env.COOLDOWN_MINUTES  || "45", 10);
-const RESET_MAGIC       = (process.env.RESET_MAGIC || "oga").toLowerCase();
-
-// Rate limit (per user/phone number)
-const RL_MAX_TOKENS     = parseInt(process.env.RL_MAX_TOKENS || "6", 10);   // tokens in bucket
-const RL_REFILL_SEC     = parseInt(process.env.RL_REFILL_SEC || "10", 10);  // window seconds
+// ===== Config (with safe defaults) =====
+const GRAPH_VERSION      = process.env.GRAPH_VERSION || "23.0"; // set "23.0" (no 'v') in Render
+const SESSION_TTL_HOURS  = parseInt(process.env.SESSION_TTL_HOURS || "6", 10);
+const COOLDOWN_MINUTES   = parseInt(process.env.COOLDOWN_MINUTES  || "45", 10);
+const RESET_MAGIC        = (process.env.RESET_MAGIC || "oga").toLowerCase();
 
 const GRAPH_BASE = `https://graph.facebook.com/v${GRAPH_VERSION}`;
 const GRAPH_URL  = `${GRAPH_BASE}/${process.env.PHONE_NUMBER_ID}/messages`;
@@ -49,64 +32,92 @@ const AUTH = {
 };
 
 if (!process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) {
-  console.error(JSON.stringify({ level:"fatal", evt:"missing_env", at:"boot", missing: ["WHATSAPP_TOKEN","PHONE_NUMBER_ID"] }));
+  console.error("❌ Missing env: WHATSAPP_TOKEN or PHONE_NUMBER_ID");
   process.exit(1);
 }
 
-// ===== Redis (fallback to memory) =====
+// ===== Built-in DB layer (Postgres) =====
+const NO_DB = !process.env.DATABASE_URL;
+let pg = null, pool = null;
+
+if (!NO_DB) {
+  try {
+    pg = require("pg");
+    pool = new pg.Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false,
+      max: parseInt(process.env.DB_POOL_MAX || "5", 10),
+      idleTimeoutMillis: 30000,
+    });
+    pool.on("error", (err) => console.error("[DB] pool error:", err?.message || err));
+    console.log("[DB] Connected pool ready");
+  } catch (e) {
+    console.warn("[DB] pg not installed or failed to init. Running NO-DB mode.", e?.message || e);
+  }
+}
+
+async function dbSaveLead(lead) {
+  // lead = { wa_from, city_id, city_title, zone, service_id, service_label, urgency, source }
+  if (!pool) {
+    console.log("[DB] NO-DB mode, lead:", lead);
+    return { ok: true, noop: true };
+  }
+  const q = `
+    INSERT INTO leads
+      (wa_from, city_id, city_title, zone, service_id, service_label, urgency, source, created_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NOW())
+    RETURNING id
+  `;
+  const vals = [
+    lead.wa_from || null,
+    lead.city_id || null,
+    lead.city_title || null,
+    lead.zone ?? null,
+    lead.service_id || null,
+    lead.service_label || null,
+    lead.urgency || null,
+    lead.source || null,
+  ];
+  const { rows } = await pool.query(q, vals);
+  return { ok: true, id: rows?.[0]?.id };
+}
+
+async function dbHealth() {
+  if (!pool) return { ok: true, noop: true };
+  try {
+    await pool.query("SELECT 1");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+// ===== Redis sessions (fallback to memory) =====
 let redis = null;
 let useMemory = false;
 try {
   const Redis = require("ioredis");
   if (process.env.REDIS_URL) {
     redis = new Redis(process.env.REDIS_URL, { lazyConnect: false, maxRetriesPerRequest: 2 });
-    redis.on("connect", () => console.log(JSON.stringify({ level:"info", evt:"redis_connect" })));
+    redis.on("connect", () => console.log("[Redis] connected"));
     redis.on("error", (e) => {
-      console.error(JSON.stringify({ level:"error", evt:"redis_error", msg: e?.message || String(e) }));
-      redis = null; useMemory = true;
+      console.error("[Redis] error:", e?.message || e);
+      redis = null;
+      useMemory = true;
     });
   } else {
     useMemory = true;
-    console.warn(JSON.stringify({ level:"warn", evt:"redis_absent_memory_fallback" }));
+    console.warn("[Redis] REDIS_URL missing — using in-memory sessions");
   }
 } catch {
   useMemory = true;
-  console.warn(JSON.stringify({ level:"warn", evt:"redis_module_missing_memory_fallback" }));
+  console.warn("[Redis] ioredis not available — using in-memory sessions");
 }
 
-// ===== In-memory stores (fallbacks) =====
-const mem = new Map();       // sessions
-const memKeys = new Set();   // cooldown keys
-const memIdem = new Set();   // idempotency keys (message_id)
-const memRL   = new Map();   // rate limit buckets { tokens, resetAt }
+const mem = new Map();     // session store
+const memKeys = new Set(); // cooldown keys (when memory fallback)
 
-// ===== Utilities =====
-const nowSec = () => Math.floor(Date.now()/1000);
-
-// Robust delay
-const delay = (ms) => new Promise(res => setTimeout(res, ms));
-
-// Graph call with retry & backoff (429/5xx/network)
-async function postGraphWithRetry(payload, attempt = 1) {
-  const MAX_ATT = 3;
-  try {
-    return await axios.post(GRAPH_URL, payload, AUTH);
-  } catch (err) {
-    const status = err?.response?.status;
-    const retriable = !status || status === 429 || (status >= 500 && status < 600);
-    const info = { level:"error", evt:"graph_post_error", attempt, status, message: err?.message };
-    console.error(JSON.stringify(info));
-
-    if (retriable && attempt < MAX_ATT) {
-      const backoff = 300 * Math.pow(2, attempt - 1); // 300ms, 600ms
-      await delay(backoff);
-      return postGraphWithRetry(payload, attempt + 1);
-    }
-    throw err;
-  }
-}
-
-// ===== Sessions =====
+// --- session helpers ---
 async function sessGet(userId) {
   if (!useMemory && redis) {
     const raw = await redis.get(`s24:sess:${userId}`);
@@ -128,7 +139,7 @@ async function sessDel(userId) {
   mem.delete(userId);
 }
 
-// ===== Cooldown =====
+// --- cooldown helpers ---
 async function coolSet(userId, minutes = COOLDOWN_MINUTES) {
   const key = `s24:cool:${userId}`;
   if (!useMemory && redis) {
@@ -149,40 +160,6 @@ async function coolDel(userId) {
   memKeys.delete(key);
 }
 
-// ===== Idempotency (incoming message dedupe) =====
-async function idemSeen(messageId) {
-  const key = `s24:idem:${messageId}`;
-  if (!messageId) return false;
-  if (!useMemory && redis) {
-    const ok = await redis.set(key, "1", "NX", "EX", 60 * 10); // 10min
-    return ok === null; // if set failed => already exists
-  } else {
-    if (memIdem.has(key)) return true;
-    memIdem.add(key);
-    setTimeout(() => memIdem.delete(key), 10 * 60 * 1000).unref?.();
-    return false;
-  }
-}
-
-// ===== Rate limit (token bucket per user) =====
-async function rlAllow(userId) {
-  const key = `s24:rl:${userId}`;
-  if (!useMemory && redis) {
-    // Sliding bucket using INCR + EXPIRE per window
-    const windowKey = `${key}:${Math.floor(nowSec()/RL_REFILL_SEC)}`;
-    const cnt = await redis.incr(windowKey);
-    if (cnt === 1) await redis.expire(windowKey, RL_REFILL_SEC);
-    return cnt <= RL_MAX_TOKENS;
-  } else {
-    const w = Math.floor(nowSec()/RL_REFILL_SEC);
-    const bucket = memRL.get(userId) || { window: w, count: 0 };
-    if (bucket.window !== w) { bucket.window = w; bucket.count = 0; }
-    bucket.count += 1;
-    memRL.set(userId, bucket);
-    return bucket.count <= RL_MAX_TOKENS;
-  }
-}
-
 // ===== Static data =====
 const CITIES = [{ id: "city_guatemala", title: "Ciudad de Guatemala" }];
 
@@ -199,6 +176,7 @@ const SERVICE_LABEL = Object.fromEntries(SERVICES.map(s => [s.id, s.label]));
 const SERVICE_NAME_TO_ID = (() => {
   const map = {};
   for (const s of SERVICES) map[s.label.toLowerCase()] = s.id;
+  // alias comunes
   map["plomero"] = "srv_plomero";
   map["electricista"] = "srv_electricista";
   map["cerrajero"] = "srv_cerrajero";
@@ -218,8 +196,8 @@ const ZONA_EMOJI = {
   21:"🚧",22:"📦",23:"🚋",24:"🏗️",25:"🌳"
 };
 
-// ===== WhatsApp helpers (with retry) =====
-function postWA(payload) { return postGraphWithRetry(payload); }
+// ===== WhatsApp helpers =====
+function postWA(payload) { return axios.post(GRAPH_URL, payload, AUTH); }
 function sendText(to, text) {
   return postWA({ messaging_product: "whatsapp", to, type: "text", text: { body: text } });
 }
@@ -238,7 +216,7 @@ function sendInteractiveButton(to, headerText, bodyText, buttonId, buttonTitle) 
   });
 }
 
-// ===== UI blocks =====
+// UI: start confirm
 function sendStartConfirm(to) {
   return postWA({
     messaging_product: "whatsapp",
@@ -257,6 +235,8 @@ function sendStartConfirm(to) {
     },
   });
 }
+
+// role
 function sendRoleButtons(to) {
   return postWA({
     messaging_product: "whatsapp",
@@ -275,6 +255,8 @@ function sendRoleButtons(to) {
     },
   });
 }
+
+// city
 function sendCityMenu(to) {
   return postWA({
     messaging_product: "whatsapp",
@@ -291,6 +273,8 @@ function sendCityMenu(to) {
     }
   });
 }
+
+// zona groups
 function sendZonaGroupButtons(to) {
   return postWA({
     messaging_product: "whatsapp",
@@ -310,6 +294,8 @@ function sendZonaGroupButtons(to) {
     }
   });
 }
+
+// zona list
 function sendZonaList(to, start, end) {
   const rows = [];
   for (let z = start; z <= end; z++) rows.push({ id: `zona_${z}`, title: `Zona ${z} ${ZONA_EMOJI[z] || ""}` });
@@ -325,6 +311,8 @@ function sendZonaList(to, start, end) {
     }
   });
 }
+
+// zona confirm
 function sendZonaConfirm(to, z) {
   const emoji = ZONA_EMOJI[z] || "";
   return postWA({
@@ -344,7 +332,8 @@ function sendZonaConfirm(to, z) {
     }
   });
 }
-// Services list — City (blank line) Zone (blank line) + consent
+
+// services list + consent (City line, blank line, Zone line, blank line)
 function sendServicesList(to, cityTitle, z) {
   const zEmoji = ZONA_EMOJI[z] || "";
   const consent = "_Al continuar, aceptas que tus datos se compartan con profesionales cercanos y que puedas recibir sus llamadas o mensajes. Sin costo._";
@@ -364,11 +353,18 @@ function sendServicesList(to, cityTitle, z) {
       footer: { text: "Servicio24" },
       action: {
         button: "Seleccionar servicio",
-        sections: [{ title: "Profesionales", rows: SERVICES.map(s => ({ id: s.id, title: `${s.label} ${s.emoji}` })) }]
+        sections: [
+          {
+            title: "Profesionales",
+            rows: SERVICES.map(s => ({ id: s.id, title: `${s.label} ${s.emoji}` }))
+          }
+        ]
       }
     }
   });
 }
+
+// ===== URGENCY question (after service selection) =====
 function sendUrgencyQuestion(to) {
   return postWA({
     messaging_product: "whatsapp",
@@ -388,6 +384,8 @@ function sendUrgencyQuestion(to) {
     },
   });
 }
+
+// ===== FINAL interactive ("Gracias") — keeps keyboard closed =====
 function sendFinalInteractive(to, finalText) {
   return sendInteractiveButton(
     to,
@@ -397,6 +395,8 @@ function sendFinalInteractive(to, finalText) {
     "Gracias 🙏"
   );
 }
+
+// ===== FINAL lead (INTERACTIVE) — unified multiline (City then Zone) =====
 async function sendLeadReady(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
   const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
@@ -411,10 +411,12 @@ async function sendLeadReady(to, cityTitle, zone, serviceId) {
   return finalText;
 }
 
-// ===== Ads helpers =====
+// ===== ADS: parsing prefill from first text =====
+// Pattern example:  "#ad city=city_guatemala&zone=7&service=srv_electricista"
 function parseAdParams(rawText) {
   if (!rawText) return null;
   const text = String(rawText).trim();
+
   const m = text.match(/#ad\s+(.+)$/i);
   if (!m) return null;
   const qs = m[1];
@@ -430,14 +432,17 @@ function parseAdParams(rawText) {
   let zoneStr = params.zone || params.zona || params.z;
   let service = params.service || params.servicio || params.s;
 
+  // normalize service
   let serviceId = null;
   if (service) {
     const sv = service.toLowerCase();
     serviceId = SERVICE_LABEL[sv] ? sv : (SERVICE_NAME_TO_ID[sv] || null);
     if (!serviceId && sv.startsWith("srv_")) serviceId = sv;
   }
+
   const zone = zoneStr ? parseInt(zoneStr, 10) : null;
 
+  // normalize city
   let city = null;
   if (cityId) {
     const found = CITIES.find(c => c.id === cityId);
@@ -451,6 +456,8 @@ function parseAdParams(rawText) {
     serviceId: (serviceId && SERVICE_LABEL[serviceId]) ? serviceId : null
   };
 }
+
+// ===== ADS confirm screen (with service emoji; City then Zone) =====
 function sendAdConfirm(to, cityTitle, zone, serviceId) {
   const svc = SERVICES.find(s => s.id === serviceId);
   const svcText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
@@ -477,10 +484,11 @@ function sendAdConfirm(to, cityTitle, zone, serviceId) {
   });
 }
 
-// ===== Flow recovery =====
+// ===== Free-text behavior =====
 async function recoverUI(from, s) {
   if (!s.started) { await sendStartConfirm(from); return; }
 
+  // ADS flow: respect ad city lock
   if (s.source === "ad") {
     if (!s.zone)          { await sendZonaGroupButtons(from); return; }
     if (!s.zoneConfirmed) { await sendZonaConfirm(from, s.zone); return; }
@@ -492,6 +500,7 @@ async function recoverUI(from, s) {
     if (!s.urgency)       { await sendUrgencyQuestion(from); return; }
   }
 
+  // Organic flow
   if (!s.city)            { await sendCityMenu(from); return; }
   if (!s.zone)            { await sendZonaGroupButtons(from); return; }
   if (!s.zoneConfirmed)   { await sendZonaConfirm(from, s.zone); return; }
@@ -512,57 +521,34 @@ app.get("/webhook", (req, res) => {
 
 // ===== Receive =====
 app.post("/webhook", async (req, res) => {
-  const reqStart = Date.now();
   try {
     const entry  = req.body.entry?.[0];
     const change = entry?.changes?.[0];
     const value  = change?.value;
     const msg    = value?.messages?.[0];
-    const msgId  = msg?.id || msg?.key?.id || null;
-    const from   = msg?.from;
+    if (!msg) return res.sendStatus(200);
 
-    // Idempotency: drop repeats
-    if (msgId) {
-      const already = await idemSeen(msgId);
-      if (already) {
-        console.log(JSON.stringify({ level:"info", evt:"idem_skip", msgId, from }));
-        return res.sendStatus(200);
-      }
-    }
-
-    // Basic validation
-    if (!from || !msg) {
-      console.warn(JSON.stringify({ level:"warn", evt:"no_message_or_from" }));
-      return res.sendStatus(200);
-    }
-
-    // Rate limit per user
-    const allowed = await rlAllow(from);
-    if (!allowed) {
-      console.warn(JSON.stringify({ level:"warn", evt:"rate_limited", from }));
-      try {
-        await sendText(from, "Estamos recibiendo varios mensajes. Por favor, intenta de nuevo en unos segundos 🙏");
-      } catch {}
-      return res.sendStatus(200);
-    }
+    const from = msg.from;
 
     // ensure session
     let s = await sessGet(from);
     if (!s) {
       s = {
         city:null, zone:null, zoneConfirmed:false, serviceId:null,
-        urgency:null, started:false, state:"MENU", lastConfirmation:null, finalAcked:false,
-        source:null, adLockCity:false
+        urgency:null, // "now" | "later"
+        started:false, state:"MENU", lastConfirmation:null, finalAcked:false,
+        source:null,    // "ad" | null
+        adLockCity:false
       };
       await sessSet(from, s);
     }
 
-    // MAGIC RESET
+    // MAGIC RESET — anytime
     if (msg.type === "text") {
       const bodyRaw = (msg.text?.body || "");
-      const lower = bodyRaw.trim().toLowerCase();
+      const body = bodyRaw.trim().toLowerCase();
 
-      if (lower === RESET_MAGIC) {
+      if (body === RESET_MAGIC) {
         await coolDel(from);
         await sessDel(from);
         const fresh = {
@@ -575,10 +561,11 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // Detect Ads prefill
+      // First text → try detect Ad params
       if (!s.started) {
         const ad = parseAdParams(bodyRaw);
         if (ad && ad.city && ad.zone && ad.serviceId) {
+          // Prefill from ads
           s.started = true;
           s.source = "ad";
           s.adLockCity = true;
@@ -595,17 +582,27 @@ app.post("/webhook", async (req, res) => {
         }
       }
 
-      // DONE & cooldown echo handling
+      // If DONE
       if (s.state === "DONE") {
         if (await coolHas(from)) {
           if (s.finalAcked) return res.sendStatus(200);
-          // DO NOT re-send interactive to keep button greyed — send nothing / or a short text if needed
+          const fallback =
+            s.lastConfirmation ||
+            (
+              `Listo ✅\n\n` +
+              `${(SERVICES.find(x => x.id === s.serviceId)?.label || "Profesional")} ` +
+              `${(SERVICES.find(x => x.id === s.serviceId)?.emoji || "👤")}\n\n` +
+              `${(s.city?.title || "Ciudad de Guatemala")}\n\n` +
+              `Zona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n\n` +
+              `En breve te contactarán profesionales cercanos.`
+            );
+          // אל תשלח שוב כרטיס אינטראקטיבי — רק אם טרם נשלח (finalAcked=false) בהקשר Gracias נטפל בנפרד
+          await sendFinalInteractive(from, fallback);
           s.finalAcked = true;
           await sessSet(from, s);
-          try { await sendText(from, "Gracias 🙏"); } catch {}
           return res.sendStatus(200);
         } else {
-          // fresh start
+          // cooldown expired → start fresh
           await sessDel(from);
           const fresh = {
             city:null, zone:null, zoneConfirmed:false, serviceId:null,
@@ -618,6 +615,7 @@ app.post("/webhook", async (req, res) => {
         }
       }
 
+      // Regular text → show current UI
       await recoverUI(from, s);
       return res.sendStatus(200);
     }
@@ -628,9 +626,13 @@ app.post("/webhook", async (req, res) => {
     if (interactive?.type === "list_reply") {
       const id = interactive.list_reply?.id;
 
-      // City chosen
+      // city (only if not ad-locked)
       if (CITIES.some(c => c.id === id)) {
-        if (s.adLockCity) { await sendZonaGroupButtons(from); return res.sendStatus(200); }
+        if (s.adLockCity) {
+          // ignore city change in ad flow; go pick zone
+          await sendZonaGroupButtons(from);
+          return res.sendStatus(200);
+        }
         const city = CITIES.find(c => c.id === id);
         s.city = city; s.zone = null; s.zoneConfirmed = false; s.serviceId = null; s.urgency = null;
         s.started = true; s.state = "MENU"; s.finalAcked = false;
@@ -639,23 +641,19 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // Zone chosen
+      // exact zona
       if (id?.startsWith("zona_")) {
         const z = parseInt(id.split("_")[1], 10);
-        if (Number.isFinite(z) && z >= 1 && z <= 25) {
+        if (z >= 1 && z <= 25) {
           s.zone = z; s.zoneConfirmed = false; s.serviceId = null; s.urgency = null;
           s.state = "MENU"; s.finalAcked = false;
           await sessSet(from, s);
-          await sendZonaConfirm(from, z);
-          return res.sendStatus(200);
-        } else {
-          console.warn(JSON.stringify({ level:"warn", evt:"zone_invalid", id }));
-          await sendText(from, "Zona inválida. Elige una zona entre 1 y 25.");
+        await sendZonaConfirm(from, z);
           return res.sendStatus(200);
         }
       }
 
-      // Service chosen
+      // service
       if (SERVICE_LABEL[id]) {
         if (!s.zoneConfirmed) {
           await sendText(from, "Primero selecciona y confirma tu zona para continuar.");
@@ -669,10 +667,6 @@ app.post("/webhook", async (req, res) => {
         await sendUrgencyQuestion(from);
         return res.sendStatus(200);
       }
-
-      // Unknown list id
-      console.warn(JSON.stringify({ level:"warn", evt:"unknown_list_id", id }));
-      return res.sendStatus(200);
     }
 
     // button reply
@@ -689,12 +683,9 @@ app.post("/webhook", async (req, res) => {
       if (id === "zona_group_11_20") { s.finalAcked = false; await sessSet(from, s); await sendZonaList(from, 11, 20); return res.sendStatus(200); }
       if (id === "zona_group_21_25") { s.finalAcked = false; await sessSet(from, s); await sendZonaList(from, 21, 25); return res.sendStatus(200); }
 
-      if (id === "zona_change") {
-        s.state = "MENU"; s.finalAcked = false;
-        await sessSet(from, s); await sendZonaGroupButtons(from); return res.sendStatus(200);
-      }
+      if (id === "zona_change") { s.state = "MENU"; s.finalAcked = false; await sessSet(from, s); await sendZonaGroupButtons(from); return res.sendStatus(200); }
       if (id === "zona_confirm") {
-        if (!s.zone || !(s.zone >=1 && s.zone <=25)) { await sendZonaGroupButtons(from); return res.sendStatus(200); }
+        if (!s.zone) { await sendZonaGroupButtons(from); return res.sendStatus(200); }
         s.zoneConfirmed = true; s.state = "MENU"; s.finalAcked = false;
         await sessSet(from, s);
         const cityTitle = s.city?.title || "Ciudad de Guatemala";
@@ -702,45 +693,70 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // Ads confirm
+      // ADS confirm buttons
       if (id === "ad_yes") {
-        s.started = true; s.state = "MENU"; s.zoneConfirmed = true; s.finalAcked = false;
+        s.started = true;
+        s.state = "MENU";
+        s.zoneConfirmed = true;
+        s.finalAcked = false;
         await sessSet(from, s);
         await sendUrgencyQuestion(from);
         return res.sendStatus(200);
       }
       if (id === "ad_change") {
-        s.state = "MENU"; s.serviceId = null; s.urgency = null; s.finalAcked = false;
+        // City locked; user can change zone first, then service
+        s.state = "MENU";
+        s.serviceId = null;
+        s.urgency = null;
+        s.finalAcked = false;
         await sessSet(from, s);
         await sendZonaGroupButtons(from);
         return res.sendStatus(200);
       }
 
-      // Urgency
+      // URGENCY answers
       if (id === "urgency_now" || id === "urgency_later") {
-        s.urgency = (id === "urgency_now") ? "now" : "later";
+        s.urgency = (id === "urgency_now") ? "now" : "later"; // internal only
         await sessSet(from, s);
 
         const cityTitle = s.city?.title || "Ciudad de Guatemala";
         const finalText = await sendLeadReady(from, cityTitle, s.zone, s.serviceId);
 
+        // Save lead to DB (safe no-throw)
+        try {
+          const svc = SERVICES.find(x => x.id === s.serviceId);
+          await dbSaveLead({
+            wa_from: from,
+            city_id: s.city?.id || null,
+            city_title: cityTitle,
+            zone: s.zone,
+            service_id: s.serviceId || null,
+            service_label: svc?.label || null,
+            urgency: s.urgency || null,
+            source: s.source || "organic", // "ad" if came from ads
+          });
+        } catch (e) {
+          console.error("[DB] saveLead error:", e?.message || e);
+        }
+
         s.state = "DONE";
         s.lastConfirmation = finalText;
-        s.finalAcked = false;     // allow one final *echo* only if needed (but we won't re-send interactive)
+        s.finalAcked = false;     // allow one interactive echo via Gracias
         await sessSet(from, s);
-        await coolSet(from);
+        await coolSet(from);      // start cooldown
         return res.sendStatus(200);
       }
 
-      // Final ack — SINGLE USE: do not send interactive again
+      // final ack button — SINGLE USE: do NOT resend interactive; reply with plain text only
       if (id === "final_ack") {
         if (await coolHas(from)) {
-          if (s.finalAcked) return res.sendStatus(200);
+          if (s.finalAcked) return res.sendStatus(200); // already pressed once during cooldown
           s.finalAcked = true;
           await sessSet(from, s);
-          try { await sendText(from, "Gracias 🙏"); } catch {}
+          await sendText(from, "Gracias 🙏");
           return res.sendStatus(200);
         } else {
+          // cooldown expired → this press acts like fresh start prompt
           await sessDel(from);
           const fresh = {
             city:null, zone:null, zoneConfirmed:false, serviceId:null,
@@ -752,13 +768,9 @@ app.post("/webhook", async (req, res) => {
           return res.sendStatus(200);
         }
       }
-
-      // Unknown button id
-      console.warn(JSON.stringify({ level:"warn", evt:"unknown_button_id", id }));
-      return res.sendStatus(200);
     }
 
-    // Fallback if city missing (respect ad lock)
+    // fallback if city missing (respect ad lock)
     if (!s.city) {
       if (s.adLockCity && s.city) {
         await sendZonaGroupButtons(from);
@@ -770,24 +782,22 @@ app.post("/webhook", async (req, res) => {
 
     return res.sendStatus(200);
   } catch (err) {
-    console.error(JSON.stringify({ level:"error", evt:"webhook_exception", message: err?.message, stack: err?.stack }));
-    // Graceful error to user if we can
-    try {
-      const from = req?.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.from;
-      if (from) await sendText(from, "Tenemos un problema temporal. Intenta nuevamente más tarde 🙏");
-    } catch {}
+    console.error("Webhook POST error:", err?.response?.data || err.message);
     return res.sendStatus(200);
-  } finally {
-    const ms = Date.now() - reqStart;
-    console.log(JSON.stringify({ level:"info", evt:"req_done", ms }));
   }
 });
 
 // ===== Health =====
 app.get("/", (_req, res) =>
-  res.status(200).send("🚀 Servicio24 — V3.1 Barzel Stable (Ads+Organic + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use + Validation + Idempotency + Retry + RateLimit)"),
+  res.status(200).send("🚀 Servicio24 — V3.1 Portable (Ads + Redis + Emojis + Cooldown + Reset + Urgency + Gracias single-use + DB + Formatting)"),
 );
+
+// Optional DB health
+app.get("/health/db", async (_req, res) => {
+  const h = await dbHealth();
+  res.status(h.ok ? 200 : 500).json(h);
+});
 
 // ===== Start =====
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(JSON.stringify({ level:"info", evt:"server_start", port: PORT, tag: "V3.1" })));
+app.listen(PORT, () => console.log(`Server running on port ${PORT} [V3.1 Portable]`));
