@@ -457,18 +457,22 @@ app.get("/webhook", (req, res) => {
 async function saveLeadToSupabase({ phone, city, zona, service, urgency }) {
   if (!supabase) return false;
   try {
-    const { error } = await supabase.from("leads").insert([{ phone, city, zona, service, urgency }]);
+    const { data, error } = await supabase
+      .from("leads")
+      .insert([{ phone, city, zona, service, urgency }])
+      .select();
+
     if (error) {
       console.error("[Supabase] insert error:", error.message);
       return false;
     }
+    console.log("[Lead] saved:", { phone, city, zona, service, urgency });
     return true;
   } catch (e) {
     console.error("[Supabase] unexpected error:", e?.message || e);
     return false;
   }
 }
-
 // ===== Receive =====
 app.post("/webhook", async (req, res) => {
   try {
