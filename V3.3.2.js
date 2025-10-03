@@ -715,6 +715,156 @@ app.get("/webhook", (req,res)=>{
   return res.sendStatus(403);
 });
 
+// ============ SMART FREE-TEXT REGEX PARSER (drop-in) ============
+// קיצור זרימה מטקסט חופשי: "necesito un plomero en zona 10 urgente" וכד'.
+const SMART_REGEX = {
+  zone: /\b(?:zona|zone|z)\s*([1-2]?\d|25)\b/iu,
+  urgent: /\b(urgente|ahora|ya|inmediato|ahorita|rápido|de\s*una)\b/iu,
+  later: /\b(luego|despu[eé]s|ma[ñn]ana|m[aá]s\s*tarde|no\s*urgente|programar|cuando\s*puedas|cita)\b/iu,
+};
+
+// מיפוי שירותים למילות מפתח (הוסף/עדכן לפי ה־SERVICES שלך)
+const SERVICE_SYNONYMS = {
+  srv_plomero:        ['plomero','plomeria','fontanero','plumbing','fuga','tuberia','tubería'],
+  srv_electricista:   ['electricista','electricidad','corto','luz','breaker','fusible'],
+  srv_cerrajero:      ['cerrajero','cerrajeria','llave','cerradura','candado','cerrojo'],
+  srv_vidriero:       ['vidriero','vidrio','ventana','cristal'],
+  srv_tecnico_ac:     ['aire acondicionado','ac','a/c','clima','split','mini split'],
+  // example: 'srv_albanil': ['albañil','albanil','constructor','pared','yeso'],
+};
+
+// עזר: נירמול טקסט (מוריד דיאקריטיים)
+function _norm(s=''){return s.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,'');}
+function _escapeReg(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
+function _clampZone(n){const z=Number(n);return z>=1&&z<=25?z:null;}
+
+// מחזיר serviceId ראשון שנמצא ע"פ מילים נרדפות
+function _detectService(text){
+  const t=_norm(text);
+  for(const [id,words] of Object.entries(SERVICE_SYNONYMS)){
+    for(const w of words){
+      const re=new RegExp(`\\b${_escapeReg(_norm(w))}\\b`,'iu');
+      if(re.test(t)) return id;
+    }
+  }
+  return null;
+}
+
+// תווית ידידותית לשירות (נשען על SERVICE_LABELS/NAME אם קיימים אצלך)
+function _labelService(serviceId){
+  if (typeof SERVICE_LABELS === 'object' && SERVICE_LABELS[serviceId]) return SERVICE_LABELS[serviceId];
+  if (typeof SERVICE_NAME === 'object' && SERVICE_NAME[serviceId]) return SERVICE_NAME[serviceId];
+  return (serviceId||'').replace(/^srv_/,'').replace(/_/g,' ').replace(/\b\w/g,m=>m.toUpperCase());
+}
+
+// אילו שדות חסרים בסשן
+function _missing(sess){
+  const m=[];
+  if(!sess.cityId)    m.push('cityId');
+  if(!sess.zone)      m.push('zone');
+  if(!sess.serviceId) m.push('serviceId');
+  if(!sess.urgency)   m.push('urgency');
+  return m;
+}
+
+// סיכום קצר להזמנה
+function _buildSummary({zone, serviceId, urgency}){
+  const svc=_labelService(serviceId);
+  const urg=(urgency==='Ahora')?'ahora':'más tarde';
+  return `Servicio: ${svc}\nZona: ${zone}\nPrioridad: ${urg}\n¿Confirmar?`;
+}
+
+// הפונקציה הראשית: מנסה לפרש טקסט חופשי ולהאיץ את הזרימה.
+// מחזירה true אם טיפלנו בהודעה (כלומר אל תמשיך לתפריטים הרגילים).
+async function trySmartRegexFastPath(from, text, session){
+  try{
+    const raw=text||'';
+    const t=_norm(raw);
+
+    // אל תפריע במסכי אישור/סגירה
+    if (session.stage === 'confirm' || session.stage === 'done') return false;
+
+    // זיהוי ישיר
+    const zMatch = t.match(SMART_REGEX.zone);
+    const zone    = zMatch ? _clampZone(zMatch[1]) : null;
+    const serviceId = _detectService(t);
+    const urgency   = SMART_REGEX.urgent.test(t) ? 'Ahora'
+                      : SMART_REGEX.later.test(t) ? 'No'
+                      : null;
+
+    const needs=_missing(session);
+    const updates={};
+
+    // השלמות חלקיות — אם המשתמש באמצע זרימה, נכניס רק מה שחסר
+    if(zone && needs.includes('zone'))         updates.zone = zone;
+    if(serviceId && needs.includes('serviceId')) updates.serviceId = serviceId;
+    if(urgency && needs.includes('urgency'))     updates.urgency = urgency;
+
+    // אם אין אפילו עדכון אחד — לא זוהה כלום → תן לזרימה הרגילה לרוץ
+    const hasPartial = Object.keys(updates).length>0;
+    const hasFull = !!( (zone??session.zone) && (serviceId??session.serviceId) && (urgency??session.urgency) );
+
+    // אם אין התאמה כלל — החזר false
+    if(!hasPartial && !hasFull) return false;
+
+    // שמירת עדכונים חלקיים
+    Object.assign(session, updates);
+
+    // אם יש לנו שלושה פרמטרים מלאים → קפיצה למסך אישור
+    if( (session.zone || zone) && (session.serviceId || serviceId) && (session.urgency || urgency) ){
+      // ברירת מחדל לעיר אם חסרה (רוב המקרים זה GUA City)
+      if(!session.cityId && typeof CITIES !== 'undefined'){
+        const gCity = CITIES.find(c => /guatemala/i.test(c.title)) || CITIES[0];
+        if(gCity) session.cityId = gCity.id;
+      }
+      // ודא ערכים סופיים
+      session.zone     = session.zone     || zone;
+      session.serviceId= session.serviceId|| serviceId;
+      session.urgency  = session.urgency  || urgency;
+
+      await sessSet(from, session); // נשען על הפונקציה שקיימת אצלך
+
+      const summary = _buildSummary({
+        zone: session.zone,
+        serviceId: session.serviceId,
+        urgency: session.urgency
+      });
+
+      // שליחת אישור – ננסה כפתורים, ואם אין פונקציה זמינה ניפול ל-sendText
+      if (typeof sendInteractiveButton === 'function'){
+        await sendInteractiveButton(
+          from,
+          'Confirmación',
+          summary,
+          [
+            { id:'confirm_yes', title:'Sí ✅' },
+            { id:'confirm_no',  title:'No ❌' }
+          ]
+        );
+      } else if (typeof sendText === 'function'){
+        await sendText(from, summary + '\nResponde "sí" o "no".');
+      }
+      // עדכן סטייג׳ כדי שההנדלר ידע שאנחנו במסך אישור
+      session.stage = 'confirm';
+      await sessSet(from, session);
+      return true; // טיפלנו – לא להמשיך לתפריטים
+    }
+
+    // אם יש רק השלמה חלקית – שמור והצג את המסך הבא הרלוונטי
+    await sessSet(from, session);
+    if (typeof recoverUI === 'function'){
+      await recoverUI(from, session, { hint:'regex_partial' });
+    } else if (typeof sendText === 'function'){
+      await sendText(from, 'Perfecto, avancemos…');
+    }
+    return true;
+  }catch(err){
+    if (typeof log === 'object' && log.warn) log.warn({err:err.message}, '[regex] smart path failed');
+    return false; // במקרה של שגיאה – לא לשבור את הזרימה הרגילה
+  }
+}
+// ================== END SMART REGEX BLOCK ==================
+
 // ===== Receive (POST) with HMAC verify =====
 app.post("/webhook", verifyHmac, async (req, res)=>{
   // log raw webhook - only in debug
@@ -749,6 +899,11 @@ app.post("/webhook", verifyHmac, async (req, res)=>{
     // ===== Reset magic
     if (msg.type === "text") {
       const bodyRaw = msg.text?.body || "";
+
+      // נסה לנתח טקסט חופשי עם regex
+      const handled = await trySmartRegexFastPath(from, bodyRaw, s);
+      if (handled) return done();
+      
       const body = bodyRaw.trim().toLowerCase();
 
       if (body === RESET_MAGIC) {
