@@ -187,13 +187,13 @@ const CITIES = [
 ];
 
 const SERVICES = [
-  { id: "srv_plomero", label: "Plomero", emoji: "🚰" },
-  { id: "srv_electricista", label: "Electricista", emoji: "⚡" },
-  { id: "srv_cerrajero", label: "Cerrajero", emoji: "🔑" },
-  { id: "srv_aire", label: "Aire acondicionado", emoji: "❄️" },
-  { id: "srv_mecanico", label: "Mecánico", emoji: "🛠️" },
-  { id: "srv_grua", label: "Servicio de grúa", emoji: "🛻" },
-  { id: "srv_mudanza", label: "Mudanza", emoji: "🚚" },
+  { id: "srv_plomero", label: "Plomero", emoji: "ðŸš°" },
+  { id: "srv_electricista", label: "Electricista", emoji: "âš¡" },
+  { id: "srv_cerrajero", label: "Cerrajero", emoji: "ðŸ”‘" },
+  { id: "srv_aire", label: "Aire acondicionado", emoji: "â„ï¸" },
+  { id: "srv_mecanico", label: "MecÃ¡nico", emoji: "ðŸ› ï¸" },
+  { id: "srv_grua", label: "Servicio de grÃºa", emoji: "ðŸ›»" },
+  { id: "srv_mudanza", label: "Mudanza", emoji: "ðŸšš" },
 ];
 
 const SERVICE_LABEL = Object.fromEntries(SERVICES.map((s) => [s.id, s.label]));
@@ -207,17 +207,17 @@ const SERVICE_NAME_TO_ID = (() => {
   map["aire"] = "srv_aire";
   map["aire acondicionado"] = "srv_aire";
   map["mecanico"] = "srv_mecanico";
-  map["mecánico"] = "srv_mecanico";
+  map["mecÃ¡nico"] = "srv_mecanico";
   map["grua"] = "srv_grua";
-  map["grúa"] = "srv_grua";
+  map["grÃºa"] = "srv_grua";
   map["mudanza"] = "srv_mudanza";
   return map;
 })();
 
 const ZONA_EMOJI = {
-  1:"🏛️",2:"🍺",3:"🕊️",4:"💰",5:"🏟️",6:"🏘️",7:"🏺",8:"🚌",9:"🏨",10:"🎉",
-  11:"🛒",12:"🧰",13:"✈️",14:"🏢",15:"🎓",16:"🏰",17:"🏭",18:"🛣️",19:"🔧",20:"🏚️",
-  21:"🚧",22:"📦",23:"🚋",24:"🏗️",25:"🌳",
+  1:"ðŸ›ï¸",2:"ðŸº",3:"ðŸ•Šï¸",4:"ðŸ’°",5:"ðŸŸï¸",6:"ðŸ˜ï¸",7:"ðŸº",8:"ðŸšŒ",9:"ðŸ¨",10:"ðŸŽ‰",
+  11:"ðŸ›’",12:"ðŸ§°",13:"âœˆï¸",14:"ðŸ¢",15:"ðŸŽ“",16:"ðŸ°",17:"ðŸ­",18:"ðŸ›£ï¸",19:"ðŸ”§",20:"ðŸšï¸",
+  21:"ðŸš§",22:"ðŸ“¦",23:"ðŸš‹",24:"ðŸ—ï¸",25:"ðŸŒ³",
 };
 
 // ===== Helpers - Sessions =====
@@ -304,7 +304,7 @@ function sendStartConfirm(to){
     interactive: {
       type: "button",
       header: { type: "text", text: "Servicio24" },
-      body: { text: "¿Deseas iniciar tu solicitud?" },
+      body: { text: "Â¿Deseas iniciar tu solicitud?" },
       footer: { text: "Servicio24" },
       action: {
         buttons: [
@@ -328,7 +328,7 @@ function sendRoleButtons(to){
       action: {
         buttons: [
           { type: "reply", reply: { id: "role_cliente", title: "Cliente" } },
-          { type: "reply", reply: { id: "role_tecnico", title: "Técnico" } },
+          { type: "reply", reply: { id: "role_tecnico", title: "TÃ©cnico" } },
         ],
       },
     },
@@ -398,7 +398,7 @@ function sendZonaConfirm(to, z){
     interactive: {
       type: "button",
       header: { type: "text", text: `Zona seleccionada: ${z} ${emoji}` },
-      body: { text: "¿Desea continuar con esta zona?" },
+      body: { text: "Â¿Desea continuar con esta zona?" },
       footer: { text: "Servicio24" },
       action: {
         buttons: [
@@ -438,30 +438,30 @@ function sendUrgencyQuestion(to){
     interactive: {
       type: "button",
       header: { type: "text", text: "Prioridad" },
-      body: { text: "¿El servicio es para ahora?" },
+      body: { text: "Â¿El servicio es para ahora?" },
       footer: { text: "Servicio24" },
       action: {
         buttons: [
-          { type: "reply", reply: { id: "urgency_now", title: "Sí ✅" } },
-          { type: "reply", reply: { id: "urgency_later", title: "No ❌" } },
+          { type: "reply", reply: { id: "urgency_now", title: "SÃ­ âœ…" } },
+          { type: "reply", reply: { id: "urgency_later", title: "No âŒ" } },
         ],
       },
     },
   });
 }
 function sendFinalInteractive(to, finalText){
-  return sendInteractiveButton(to, "Servicio24", finalText, "final_ack", "Confirmar ✅");
+  return sendInteractiveButton(to, "Servicio24", finalText, "final_ack", "Confirmar âœ…");
 }
 async function sendLeadReady(to, cityTitle, zone, serviceId){
   const svc = SERVICES.find((s)=>s.id === serviceId);
-  const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
+  const serviceText = svc ? `${svc.label} ${svc.emoji}` : "Profesional ðŸ‘¤";
   const zoneEmoji = ZONA_EMOJI[zone] || "";
   const finalText =
-    `Listo ✅\n\n` +
+    `Listo âœ…\n\n` +
     `${serviceText}\n\n` +
     `${cityTitle}\n\n` +
     `Zona ${zone} ${zoneEmoji}\n\n` +
-    `En breve te contactarán profesionales cercanos.`;
+    `En breve te contactarÃ¡n profesionales cercanos.`;
   await sendFinalInteractive(to, finalText);
   return finalText;
 }
@@ -586,7 +586,7 @@ async function saveLeadToSupabase({ phone, city, zona, service, urgency, lang, c
     }
     // alert admin if configured
     if (ENV.ADMIN_PHONE) {
-      await sendText(ENV.ADMIN_PHONE, `⚠️ Lead save failed for ${phone} - ${service} zona ${zona}`);
+      await sendText(ENV.ADMIN_PHONE, `âš ï¸ Lead save failed for ${phone} - ${service} zona ${zona}`);
     }
   }
   return ok;
@@ -621,7 +621,7 @@ async function pickSuppliers(lead) {
 
     for (const t of top) {
       try {
-        await sendText(String(t.phone), `🔔 Nuevo lead: ${lead.service} en Zona ${lead.zona}\n📞 Cliente: ${lead.phone}\n📍 ${lead.city}\n⏱️ ${lead.urgency || ""}`);
+        await sendText(String(t.phone), `ðŸ”” Nuevo lead: ${lead.service} en Zona ${lead.zona}\nðŸ“ž Cliente: ${lead.phone}\nðŸ“ ${lead.city}\nâ±ï¸ ${lead.urgency || ""}`);
         // optional: log link table
         await supabase.from("lead_tech_links").insert([{ lead_phone: lead.phone, tech_id: t.id }]).catch(()=>{});
       } catch (e) {
@@ -663,7 +663,7 @@ function parseFreeTextToLeadParts(text) {
   // urgency
   let urgency = null;
   if (/\burgente\b|\bahora\b|\bya\b/.test(t)) urgency = "Ahora";
-  if (!urgency && /\bno urgente\b|\bdespues\b|\bdespués\b|\bluego\b/.test(t)) urgency = "Luego";
+  if (!urgency && /\bno urgente\b|\bdespues\b|\bdespuÃ©s\b|\bluego\b/.test(t)) urgency = "Luego";
 
   return { serviceId, zona, urgency };
 }
@@ -671,22 +671,22 @@ function parseFreeTextToLeadParts(text) {
 // ===== Ad confirm UI =====
 function sendAdConfirm(to, cityTitle, zone, serviceId){
   const svc = SERVICES.find((s)=>s.id===serviceId);
-  const svcText = svc ? `${svc.label} ${svc.emoji}` : "Profesional 👤";
+  const svcText = svc ? `${svc.label} ${svc.emoji}` : "Profesional ðŸ‘¤";
   const zEmoji = ZONA_EMOJI[zone] || "";
-  const body = `¿Buscas *${svcText}* en *${cityTitle}*?\nZona ${zone} ${zEmoji}`;
+  const body = `Â¿Buscas *${svcText}* en *${cityTitle}*?\nZona ${zone} ${zEmoji}`;
   return sendPayload({
     messaging_product: "whatsapp",
     to,
     type: "interactive",
     interactive: {
       type: "button",
-      header: { type: "text", text: "Confirmación" },
+      header: { type: "text", text: "ConfirmaciÃ³n" },
       body: { text: body },
       footer: { text: "Servicio24" },
       action: {
         buttons: [
-          { type: "reply", reply: { id: "ad_yes", title: "Sí ✅" } },
-          { type: "reply", reply: { id: "ad_change", title: "Cambiar 🔄" } },
+          { type: "reply", reply: { id: "ad_yes", title: "SÃ­ âœ…" } },
+          { type: "reply", reply: { id: "ad_change", title: "Cambiar ðŸ”„" } },
         ],
       },
     },
@@ -694,7 +694,7 @@ function sendAdConfirm(to, cityTitle, zone, serviceId){
 }
 
 // ===== Health =====
-app.get("/", (_req, res)=>res.status(200).send("🚀 Servicio24 — V3.3.2 Stable (Security + Regex + Routing + Queue + Supabase)"));
+app.get("/", (_req, res)=>res.status(200).send("ðŸš€ Servicio24 â€” V3.3.2 Stable (Security + Regex + Routing + Queue + Supabase)"));
 // Graph API version health check - best effort
 app.get("/health/graph", async (_req, res)=>{
   try {
@@ -716,29 +716,29 @@ app.get("/webhook", (req,res)=>{
 });
 
 // ============ SMART FREE-TEXT REGEX PARSER (drop-in) ============
-// קיצור זרימה מטקסט חופשי: "necesito un plomero en zona 10 urgente" וכד'.
+// ×§×™×¦×•×¨ ×–×¨×™×ž×” ×ž×˜×§×¡×˜ ×—×•×¤×©×™: "necesito un plomero en zona 10 urgente" ×•×›×“'.
 const SMART_REGEX = {
   zone: /\b(?:zona|zone|z)\s*([1-2]?\d|25)\b/iu,
-  urgent: /\b(urgente|ahora|ya|inmediato|ahorita|rápido|de\s*una)\b/iu,
-  later: /\b(luego|despu[eé]s|ma[ñn]ana|m[aá]s\s*tarde|no\s*urgente|programar|cuando\s*puedas|cita)\b/iu,
+  urgent: /\b(urgente|ahora|ya|inmediato|ahorita|rÃ¡pido|de\s*una)\b/iu,
+  later: /\b(luego|despu[eÃ©]s|ma[Ã±n]ana|m[aÃ¡]s\s*tarde|no\s*urgente|programar|cuando\s*puedas|cita)\b/iu,
 };
 
-// מיפוי שירותים למילות מפתח (הוסף/עדכן לפי ה־SERVICES שלך)
+// ×ž×™×¤×•×™ ×©×™×¨×•×ª×™× ×œ×ž×™×œ×•×ª ×ž×¤×ª×— (×”×•×¡×£/×¢×“×›×Ÿ ×œ×¤×™ ×”Ö¾SERVICES ×©×œ×š)
 const SERVICE_SYNONYMS = {
-  srv_plomero:        ['plomero','plomeria','fontanero','plumbing','fuga','tuberia','tubería'],
+  srv_plomero:        ['plomero','plomeria','fontanero','plumbing','fuga','tuberia','tuberÃ­a'],
   srv_electricista:   ['electricista','electricidad','corto','luz','breaker','fusible'],
   srv_cerrajero:      ['cerrajero','cerrajeria','llave','cerradura','candado','cerrojo'],
   srv_vidriero:       ['vidriero','vidrio','ventana','cristal'],
   srv_tecnico_ac:     ['aire acondicionado','ac','a/c','clima','split','mini split'],
-  // example: 'srv_albanil': ['albañil','albanil','constructor','pared','yeso'],
+  // example: 'srv_albanil': ['albaÃ±il','albanil','constructor','pared','yeso'],
 };
 
-// עזר: נירמול טקסט (מוריד דיאקריטיים)
+// ×¢×–×¨: × ×™×¨×ž×•×œ ×˜×§×¡×˜ (×ž×•×¨×™×“ ×“×™××§×¨×™×˜×™×™×)
 function _norm(s=''){return s.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,'');}
 function _escapeReg(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
 function _clampZone(n){const z=Number(n);return z>=1&&z<=25?z:null;}
 
-// מחזיר serviceId ראשון שנמצא ע"פ מילים נרדפות
+// ×ž×—×–×™×¨ serviceId ×¨××©×•×Ÿ ×©× ×ž×¦× ×¢"×¤ ×ž×™×œ×™× × ×¨×“×¤×•×ª
 function _detectService(text){
   const t=_norm(text);
   for(const [id,words] of Object.entries(SERVICE_SYNONYMS)){
@@ -750,14 +750,14 @@ function _detectService(text){
   return null;
 }
 
-// תווית ידידותית לשירות (נשען על SERVICE_LABELS/NAME אם קיימים אצלך)
+// ×ª×•×•×™×ª ×™×“×™×“×•×ª×™×ª ×œ×©×™×¨×•×ª (× ×©×¢×Ÿ ×¢×œ SERVICE_LABELS/NAME ×× ×§×™×™×ž×™× ××¦×œ×š)
 function _labelService(serviceId){
   if (typeof SERVICE_LABELS === 'object' && SERVICE_LABELS[serviceId]) return SERVICE_LABELS[serviceId];
   if (typeof SERVICE_NAME === 'object' && SERVICE_NAME[serviceId]) return SERVICE_NAME[serviceId];
   return (serviceId||'').replace(/^srv_/,'').replace(/_/g,' ').replace(/\b\w/g,m=>m.toUpperCase());
 }
 
-// אילו שדות חסרים בסשן
+// ××™×œ×• ×©×“×•×ª ×—×¡×¨×™× ×‘×¡×©×Ÿ
 function _missing(sess){
   const m=[];
   if(!sess.cityId)    m.push('cityId');
@@ -767,24 +767,24 @@ function _missing(sess){
   return m;
 }
 
-// סיכום קצר להזמנה
+// ×¡×™×›×•× ×§×¦×¨ ×œ×”×–×ž× ×”
 function _buildSummary({zone, serviceId, urgency}){
   const svc=_labelService(serviceId);
-  const urg=(urgency==='Ahora')?'ahora':'más tarde';
-  return `Servicio: ${svc}\nZona: ${zone}\nPrioridad: ${urg}\n¿Confirmar?`;
+  const urg=(urgency==='Ahora')?'ahora':'mÃ¡s tarde';
+  return `Servicio: ${svc}\nZona: ${zone}\nPrioridad: ${urg}\nÂ¿Confirmar?`;
 }
 
-// הפונקציה הראשית: מנסה לפרש טקסט חופשי ולהאיץ את הזרימה.
-// מחזירה true אם טיפלנו בהודעה (כלומר אל תמשיך לתפריטים הרגילים).
+// ×”×¤×•× ×§×¦×™×” ×”×¨××©×™×ª: ×ž× ×¡×” ×œ×¤×¨×© ×˜×§×¡×˜ ×—×•×¤×©×™ ×•×œ×”××™×¥ ××ª ×”×–×¨×™×ž×”.
+// ×ž×—×–×™×¨×” true ×× ×˜×™×¤×œ× ×• ×‘×”×•×“×¢×” (×›×œ×•×ž×¨ ××œ ×ª×ž×©×™×š ×œ×ª×¤×¨×™×˜×™× ×”×¨×’×™×œ×™×).
 async function trySmartRegexFastPath(from, text, session){
   try{
     const raw=text||'';
     const t=_norm(raw);
 
-    // אל תפריע במסכי אישור/סגירה
+    // ××œ ×ª×¤×¨×™×¢ ×‘×ž×¡×›×™ ××™×©×•×¨/×¡×’×™×¨×”
     if (session.stage === 'confirm' || session.stage === 'done') return false;
 
-    // זיהוי ישיר
+    // ×–×™×”×•×™ ×™×©×™×¨
     const zMatch = t.match(SMART_REGEX.zone);
     const zone    = zMatch ? _clampZone(zMatch[1]) : null;
     const serviceId = _detectService(t);
@@ -795,34 +795,34 @@ async function trySmartRegexFastPath(from, text, session){
     const needs=_missing(session);
     const updates={};
 
-    // השלמות חלקיות — אם המשתמש באמצע זרימה, נכניס רק מה שחסר
+    // ×”×©×œ×ž×•×ª ×—×œ×§×™×•×ª â€” ×× ×”×ž×©×ª×ž×© ×‘××ž×¦×¢ ×–×¨×™×ž×”, × ×›× ×™×¡ ×¨×§ ×ž×” ×©×—×¡×¨
     if(zone && needs.includes('zone'))         updates.zone = zone;
     if(serviceId && needs.includes('serviceId')) updates.serviceId = serviceId;
     if(urgency && needs.includes('urgency'))     updates.urgency = urgency;
 
-    // אם אין אפילו עדכון אחד — לא זוהה כלום → תן לזרימה הרגילה לרוץ
+    // ×× ××™×Ÿ ××¤×™×œ×• ×¢×“×›×•×Ÿ ××—×“ â€” ×œ× ×–×•×”×” ×›×œ×•× â†’ ×ª×Ÿ ×œ×–×¨×™×ž×” ×”×¨×’×™×œ×” ×œ×¨×•×¥
     const hasPartial = Object.keys(updates).length>0;
     const hasFull = !!( (zone??session.zone) && (serviceId??session.serviceId) && (urgency??session.urgency) );
 
-    // אם אין התאמה כלל — החזר false
+    // ×× ××™×Ÿ ×”×ª××ž×” ×›×œ×œ â€” ×”×—×–×¨ false
     if(!hasPartial && !hasFull) return false;
 
-    // שמירת עדכונים חלקיים
+    // ×©×ž×™×¨×ª ×¢×“×›×•× ×™× ×—×œ×§×™×™×
     Object.assign(session, updates);
 
-    // אם יש לנו שלושה פרמטרים מלאים → קפיצה למסך אישור
+    // ×× ×™×© ×œ× ×• ×©×œ×•×©×” ×¤×¨×ž×˜×¨×™× ×ž×œ××™× â†’ ×§×¤×™×¦×” ×œ×ž×¡×š ××™×©×•×¨
     if( (session.zone || zone) && (session.serviceId || serviceId) && (session.urgency || urgency) ){
-      // ברירת מחדל לעיר אם חסרה (רוב המקרים זה GUA City)
+      // ×‘×¨×™×¨×ª ×ž×—×“×œ ×œ×¢×™×¨ ×× ×—×¡×¨×” (×¨×•×‘ ×”×ž×§×¨×™× ×–×” GUA City)
       if(!session.cityId && typeof CITIES !== 'undefined'){
         const gCity = CITIES.find(c => /guatemala/i.test(c.title)) || CITIES[0];
         if(gCity) session.cityId = gCity.id;
       }
-      // ודא ערכים סופיים
+      // ×•×“× ×¢×¨×›×™× ×¡×•×¤×™×™×
       session.zone     = session.zone     || zone;
       session.serviceId= session.serviceId|| serviceId;
       session.urgency  = session.urgency  || urgency;
 
-      await sessSet(from, session); // נשען על הפונקציה שקיימת אצלך
+      await sessSet(from, session); // × ×©×¢×Ÿ ×¢×œ ×”×¤×•× ×§×¦×™×” ×©×§×™×™×ž×ª ××¦×œ×š
 
       const summary = _buildSummary({
         zone: session.zone,
@@ -830,37 +830,37 @@ async function trySmartRegexFastPath(from, text, session){
         urgency: session.urgency
       });
 
-      // שליחת אישור – ננסה כפתורים, ואם אין פונקציה זמינה ניפול ל-sendText
+      // ×©×œ×™×—×ª ××™×©×•×¨ â€“ × × ×¡×” ×›×¤×ª×•×¨×™×, ×•×× ××™×Ÿ ×¤×•× ×§×¦×™×” ×–×ž×™× ×” × ×™×¤×•×œ ×œ-sendText
       if (typeof sendInteractiveButton === 'function'){
         await sendInteractiveButton(
           from,
-          'Confirmación',
+          'ConfirmaciÃ³n',
           summary,
           [
-            { id:'confirm_yes', title:'Sí ✅' },
-            { id:'confirm_no',  title:'No ❌' }
+            { id:'confirm_yes', title:'SÃ­ âœ…' },
+            { id:'confirm_no',  title:'No âŒ' }
           ]
         );
       } else if (typeof sendText === 'function'){
-        await sendText(from, summary + '\nResponde "sí" o "no".');
+        await sendText(from, summary + '\nResponde "sÃ­" o "no".');
       }
-      // עדכן סטייג׳ כדי שההנדלר ידע שאנחנו במסך אישור
+      // ×¢×“×›×Ÿ ×¡×˜×™×™×’×³ ×›×“×™ ×©×”×”× ×“×œ×¨ ×™×“×¢ ×©×× ×—× ×• ×‘×ž×¡×š ××™×©×•×¨
       session.stage = 'confirm';
       await sessSet(from, session);
-      return true; // טיפלנו – לא להמשיך לתפריטים
+      return true; // ×˜×™×¤×œ× ×• â€“ ×œ× ×œ×”×ž×©×™×š ×œ×ª×¤×¨×™×˜×™×
     }
 
-    // אם יש רק השלמה חלקית – שמור והצג את המסך הבא הרלוונטי
+    // ×× ×™×© ×¨×§ ×”×©×œ×ž×” ×—×œ×§×™×ª â€“ ×©×ž×•×¨ ×•×”×¦×’ ××ª ×”×ž×¡×š ×”×‘× ×”×¨×œ×•×•× ×˜×™
     await sessSet(from, session);
     if (typeof recoverUI === 'function'){
       await recoverUI(from, session, { hint:'regex_partial' });
     } else if (typeof sendText === 'function'){
-      await sendText(from, 'Perfecto, avancemos…');
+      await sendText(from, 'Perfecto, avancemosâ€¦');
     }
     return true;
   }catch(err){
     if (typeof log === 'object' && log.warn) log.warn({err:err.message}, '[regex] smart path failed');
-    return false; // במקרה של שגיאה – לא לשבור את הזרימה הרגילה
+    return false; // ×‘×ž×§×¨×” ×©×œ ×©×’×™××” â€“ ×œ× ×œ×©×‘×•×¨ ××ª ×”×–×¨×™×ž×” ×”×¨×’×™×œ×”
   }
 }
 // ================== END SMART REGEX BLOCK ==================
@@ -900,10 +900,10 @@ app.post("/webhook", verifyHmac, async (req, res)=>{
     if (msg.type === "text") {
       const bodyRaw = msg.text?.body || "";
 
-      // נסה לנתח טקסט חופשי עם regex
+      // × ×¡×” ×œ× ×ª×— ×˜×§×¡×˜ ×—×•×¤×©×™ ×¢× regex
       const handled = await trySmartRegexFastPath(from, bodyRaw, s);
       if (handled) return done();
-      
+
       const body = bodyRaw.trim().toLowerCase();
 
       if (body === RESET_MAGIC) {
@@ -941,7 +941,7 @@ app.post("/webhook", verifyHmac, async (req, res)=>{
           if (s.finalAcked) return done();
           const fallback =
             s.lastConfirmation ||
-            `Listo ✅\n\n${(SERVICES.find((x)=>x.id===s.serviceId)?.label || "Profesional")} ${(SERVICES.find((x)=>x.id===s.serviceId)?.emoji || "👤")}\n\n${s.city?.title || "Ciudad de Guatemala"}\n\nZona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n\nEn breve te contactarán profesionales cercanos.`;
+            `Listo âœ…\n\n${(SERVICES.find((x)=>x.id===s.serviceId)?.label || "Profesional")} ${(SERVICES.find((x)=>x.id===s.serviceId)?.emoji || "ðŸ‘¤")}\n\n${s.city?.title || "Ciudad de Guatemala"}\n\nZona ${s.zone} ${(ZONA_EMOJI[s.zone] || "")}\n\nEn breve te contactarÃ¡n profesionales cercanos.`;
           await sendFinalInteractive(from, fallback);
           s.finalAcked = true;
           await sessSet(from, s);
@@ -971,12 +971,12 @@ app.post("/webhook", verifyHmac, async (req, res)=>{
         };
         // if missing critical piece - ask minimal follow up
         if (!s.pendingConfirm.serviceId) {
-          await sendText(from, "¿Qué servicio necesitas? Escribe por ejemplo: plomero / electricista / cerrajero.");
+          await sendText(from, "Â¿QuÃ© servicio necesitas? Escribe por ejemplo: plomero / electricista / cerrajero.");
           await sessSet(from, s);
           return done();
         }
         if (!s.pendingConfirm.zona) {
-          await sendText(from, "¿En qué zona estás? Escribe por ejemplo: zona 10.");
+          await sendText(from, "Â¿En quÃ© zona estÃ¡s? Escribe por ejemplo: zona 10.");
           await sessSet(from, s);
           return done();
         }
@@ -993,20 +993,20 @@ app.post("/webhook", verifyHmac, async (req, res)=>{
           `Revisar:\n` +
           `${svc ? `${svc.label} ${svc.emoji}` : "Profesional"}\n` +
           `Zona ${s.pendingConfirm.zona} ${zEmoji}\n` +
-          `${s.pendingConfirm.urgency === "Ahora" ? "Urgente ⚡" : "Para luego 🕒"}`;
+          `${s.pendingConfirm.urgency === "Ahora" ? "Urgente âš¡" : "Para luego ðŸ•’"}`;
         await sendPayload({
           messaging_product: "whatsapp",
           to: from,
           type: "interactive",
           interactive: {
             type: "button",
-            header: { type: "text", text: "Confirmación" },
+            header: { type: "text", text: "ConfirmaciÃ³n" },
             body: { text: confirmBody },
             footer: { text: "Servicio24" },
             action: {
               buttons: [
-                { type: "reply", reply: { id: "regex_confirm", title: "Confirmar ✅" } },
-                { type: "reply", reply: { id: "regex_change", title: "Cambiar 🔄" } },
+                { type: "reply", reply: { id: "regex_confirm", title: "Confirmar âœ…" } },
+                { type: "reply", reply: { id: "regex_change", title: "Cambiar ðŸ”„" } },
               ],
             },
           },
@@ -1077,7 +1077,7 @@ app.post("/webhook", verifyHmac, async (req, res)=>{
         return done();
       }
       if (id === "start_no") {
-        await sendText(from, "Operación cancelada.\n\nServicio24");
+        await sendText(from, "OperaciÃ³n cancelada.\n\nServicio24");
         return done();
       }
 
@@ -1095,7 +1095,7 @@ app.post("/webhook", verifyHmac, async (req, res)=>{
           type: "interactive",
           interactive: {
             type: "list",
-            header: { type: "text", text: "Registro de Técnico" },
+            header: { type: "text", text: "Registro de TÃ©cnico" },
             body: { text: "Selecciona tu servicio:" },
             footer: { text: "Servicio24" },
             action: {
@@ -1202,7 +1202,7 @@ app.post("/webhook", verifyHmac, async (req, res)=>{
         if (await coolHas(from)) {
           if (s.finalAcked) return done();
           s.finalAcked = true; await sessSet(from, s);
-          await sendText(from, "Confirmar ✅");
+          await sendText(from, "Confirmar âœ…");
           return done();
         } else {
           await sessDel(from);
@@ -1275,10 +1275,10 @@ app.post("/webhook", verifyHmac, async (req, res)=>{
             await supabase.from("technicians").insert([
               { phone: from, service_id: s.techServiceId, zona: z, active: true }
             ]);
-            await sendText(from, "Registro completado ✅. Empezarás a recibir clientes de tu zona.");
+            await sendText(from, "Registro completado âœ…. EmpezarÃ¡s a recibir clientes de tu zona.");
           } catch (e) {
             log.warn({ err: e?.message || e }, "[Technician] insert failed");
-            await sendText(from, "Hubo un problema al registrar. Intenta más tarde.");
+            await sendText(from, "Hubo un problema al registrar. Intenta mÃ¡s tarde.");
           }
           s.techServiceId = null; await sessSet(from, s);
           return done();
